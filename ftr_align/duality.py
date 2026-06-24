@@ -1,16 +1,15 @@
 """Dual-face analysis of a support solve.
 
-Given a certificate ``y``, the optimal dual face ``Lambda*(b;y)`` is the set of
-dual certificates that attain the support value.  Because it need not be a
-singleton (degeneracy at scale, or by construction in the redundant-element toy
-variant), per-constraint multipliers are characterised by *robust ranges*
-``[mu_lo, mu_hi]`` over the face, which classify each row as definitely binding,
-degenerately binding, or definitely slack -- invariant to which dual optimum a
-solver happens to return.
+Given a direction ``d``, the optimal dual face ``Lambda*(b;d)`` is the set of
+certificates attaining the support value.  It need not be a singleton, so
+per-constraint multipliers are characterised by *robust ranges* ``[mu_lo,
+mu_hi]`` over the face -- invariant to which dual optimum a solver returns --
+which classify each row binding / degenerate / slack.
 
-Slice 2 covers the robust ranges, classification, signed net duals (Table III),
-and the DAM/FTR limit discrepancy.  Trade space ``D(b;y)`` and attribution
-blocks come next.
+Over the support ``I(b;d)`` we build the trade space ``D = ker C`` (weight
+shifts that change neither the aggregate congestion price nor the support value)
+and partition ``I`` into matroid-connectivity attribution blocks with
+face-invariant totals ``W_{G_r}``.
 """
 
 from __future__ import annotations
@@ -20,48 +19,39 @@ from typing import Literal
 import cvxpy as cp
 import numpy as np
 import polars as pl
-from scipy.linalg import null_space
+from scipy.linalg import null_space, qr
 
-from .network import NetworkModel, contingency_label
-from .solve import SupportProblem, support_objective
+from .network import NetworkModel, align, contingency_label
+from .solve import SupportProblem, dual_feasible, support_objective
 
-FACE_TOL = 1e-6      # slack on the optimal-value constraint defining the face
-CLASS_TOL = 1e-4     # zero threshold for classification; must exceed FACE_TOL leak
-RANK_TOL = 1e-7      # numerical zero for rank/nullspace/RREF
+FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
+CLASS_TOL = 1e-4  # zero threshold for classification; must exceed FACE_TOL leak
+RANK_TOL = 1e-7  # numerical zero for rank / nullspace
 
 Classification = Literal["binding", "degenerate", "slack"]
 
 
 def robust_bounds(
-    problem: SupportProblem,
-    value: float | None = None,
-    solver=None,
-    tol: float = FACE_TOL,
+    problem: SupportProblem, solver=None, tol: float = FACE_TOL
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face ``Lambda*(b;y)``.
-
-    The face is ``Lambda(y)`` intersected with ``b^T mu == h*``.  Inactive rows
-    are pinned to 0; their bounds are ``(0, 0)``.
-    """
+    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face: ``Lambda(d)``
+    intersected with ``b^T mu == h*``.  Inactive rows get ``(0, 0)``."""
     data = problem.data
     active = data.active
-    n_rows = data.A.shape[0]
-    if value is None:
-        value = problem.solve(solver=solver).value
+    value = problem.solve(solver=solver).value
 
-    mu = cp.Variable(n_rows, nonneg=True, name="mu")
+    mu = cp.Variable(data.A.shape[0], nonneg=True, name="mu")
     s = cp.Variable(name="s")
     obj = support_objective(data.b[active], mu[active])
-    face = [
-        data.A.T @ mu + s * np.ones(data.A.shape[1]) == data.direction,
+    face = dual_feasible(data.A, mu, s, data.direction) + [
         obj <= value + tol,
         obj >= value - tol,
     ]
     if (~active).any():
         face.append(mu[~active] == 0)
 
-    lo = np.zeros(n_rows)
-    hi = np.zeros(n_rows)
+    lo = np.zeros(data.A.shape[0])
+    hi = np.zeros(data.A.shape[0])
     for i in np.where(active)[0]:
         cp.Problem(cp.Minimize(mu[i]), face).solve(solver=solver)
         lo[i] = mu.value[i]
@@ -73,11 +63,8 @@ def robust_bounds(
 def classify(
     lo: np.ndarray, hi: np.ndarray, tol: float = CLASS_TOL
 ) -> list[Classification]:
-    """Robust constraint classification (Prop. 4).
-
-    ``tol`` must exceed the face's numerical leakage (``FACE_TOL``); otherwise a
-    solver-tolerance wiggle of an exactly-zero multiplier reads as degenerate.
-    """
+    """Robust constraint classification (Prop. 4).  ``tol`` must exceed the
+    face's numerical leakage (``FACE_TOL``)."""
     out: list[Classification] = []
     for low, high in zip(lo, hi):
         if low > tol:
@@ -89,19 +76,24 @@ def classify(
     return out
 
 
+def support_index(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
+    """``I(b;d)``: rows carrying positive weight in some optimal certificate
+    (``mu_hi > 0``) -- binding or degenerate.  Only these carry attribution."""
+    return np.where(hi > tol)[0]
+
+
 def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
-    """Collapse the stacked ``mu`` to a signed net dual per (contingency,
-    element): ``mu_upper - mu_lower``.  Rows with ~zero net are dropped."""
-    system = model.system
-    names = system.network.element_names
+    """Collapse stacked ``mu`` to a signed net dual per (contingency, element):
+    ``mu_upper - mu_lower``.  Rows with ~zero net are dropped."""
+    names = model.network.element_names
     records = []
-    for key in system.contingencies:
-        net = mu[system.rows_upper(key)] - mu[system.rows_lower(key)]
-        for e in range(system.ell):
+    for c in model.contingencies:
+        net = mu[model.rows_upper(c.key)] - mu[model.rows_lower(c.key)]
+        for e in range(model.ell):
             if abs(net[e]) > 0.5:
                 records.append(
                     {
-                        "contingency": contingency_label(key, names),
+                        "contingency": contingency_label(c.key, names),
                         "element": str(names[e]) if names is not None else str(e),
                         "mu": float(net[e]),
                     }
@@ -111,70 +103,39 @@ def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
     )
 
 
-def support_index(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
-    """``I(b;y)``: rows that carry positive weight in *some* optimal certificate
-    (``mu_hi > 0``) -- binding or degenerate.  Only these can carry attribution."""
-    return np.where(hi > tol)[0]
-
-
+# ----------------------------------------------------------------------------
+# Trade space and attribution blocks
+# ----------------------------------------------------------------------------
 def trade_matrix(problem: SupportProblem, index: np.ndarray) -> np.ndarray:
-    """``C`` with columns ``c_i = [a_bar_i; b_i]`` for ``i`` in ``index``, where
-    ``a_bar_i = a_i - (1/n) 11^T a_i`` is the i-th row of ``A`` with its energy
-    (mean) component removed.  Shape ``(n+1, |index|)``."""
-    A = problem.data.A
-    b = problem.data.b
-    cols = []
-    for i in index:
-        a_bar = A[i] - A[i].mean()
-        cols.append(np.concatenate([a_bar, [b[i]]]))
-    return np.array(cols).T if len(cols) else np.zeros((A.shape[1] + 1, 0))
+    """``C`` with columns ``c_i = [a_bar_i; b_i]`` for ``i in index``, where
+    ``a_bar_i`` is row ``i`` of ``A`` with its energy (mean) component removed.
+    Shape ``(n+1, |index|)``."""
+    A, b = problem.data.A, problem.data.b
+    cols = [np.concatenate([A[i] - A[i].mean(), [b[i]]]) for i in index]
+    return np.array(cols).T if cols else np.zeros((A.shape[1] + 1, 0))
 
 
 def trade_space(C: np.ndarray, tol: float = RANK_TOL) -> np.ndarray:
-    """``D(b;y) = ker C``: weight trades over the support that leave both the
-    aggregate congestion price (``sum d_i a_bar_i = 0``) and the support value
-    (``sum d_i b_i = 0``) unchanged.  Columns are a basis; width = dim D."""
+    """``D(b;d) = ker C``: weight trades over the support that preserve both the
+    aggregate congestion price and the support value.  Columns are a basis."""
     if C.shape[1] == 0:
         return np.zeros((0, 0))
     return null_space(C, rcond=tol)
 
 
-def _rref(M: np.ndarray, tol: float = RANK_TOL) -> tuple[np.ndarray, list[int]]:
-    """Reduced row echelon form; returns (R, pivot_columns)."""
-    M = M.astype(float).copy()
-    n_rows, n_cols = M.shape
-    pivots: list[int] = []
-    r = 0
-    for c in range(n_cols):
-        if r >= n_rows:
-            break
-        p = r + int(np.argmax(np.abs(M[r:, c])))
-        if abs(M[p, c]) <= tol:
-            continue
-        M[[r, p]] = M[[p, r]]
-        M[r] /= M[r, c]
-        for rr in range(n_rows):
-            if rr != r:
-                M[rr] -= M[rr, c] * M[r]
-        pivots.append(c)
-        r += 1
-    return M, pivots
-
-
 def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
-    """Partition the columns of ``C`` into matroid-connectivity blocks: the
-    finest partition along which ``D = ker C`` splits as a direct sum, so no
-    trade crosses a block boundary.  Returned as lists of *column* positions.
-
-    Computed from fundamental circuits of one basis (RREF); the resulting
-    components are basis-independent.
-    """
+    """Partition the columns of ``C`` into matroid-connectivity blocks -- the
+    finest partition along which ``D = ker C`` splits as a direct sum.  Computed
+    from fundamental circuits of one (QR-pivoted) basis; basis-independent.
+    Returns lists of column positions."""
     n_cols = C.shape[1]
     if n_cols == 0:
         return []
-    R, pivots = _rref(C, tol)
-    pivot_row = {p: k for k, p in enumerate(pivots)}
-    pivot_set = set(pivots)
+
+    _, R, piv = qr(C, pivoting=True, mode="economic")
+    diag = np.abs(np.diag(R))
+    rank = int((diag > tol * max(diag.max(), 1.0)).sum()) if diag.size else 0
+    basis, nonbasis = list(piv[:rank]), list(piv[rank:])
 
     parent = list(range(n_cols))
 
@@ -187,13 +148,13 @@ def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
     def union(a: int, b: int) -> None:
         parent[find(a)] = find(b)
 
-    # each non-pivot column j unions with the pivots in its fundamental circuit
-    for j in range(n_cols):
-        if j in pivot_set:
-            continue
-        for p in pivots:
-            if abs(R[pivot_row[p], j]) > tol:
-                union(j, p)
+    if basis:
+        Cb = C[:, basis]
+        for j in nonbasis:
+            coef, *_ = np.linalg.lstsq(Cb, C[:, j], rcond=None)
+            for k, ck in zip(basis, coef):
+                if abs(ck) > 1e-6:
+                    union(j, k)
 
     groups: dict[int, list[int]] = {}
     for j in range(n_cols):
@@ -202,29 +163,18 @@ def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
 
 
 def attribution_blocks(
-    problem: SupportProblem,
-    value: float | None = None,
-    mu: np.ndarray | None = None,
-    solver=None,
+    problem: SupportProblem, mu: np.ndarray | None = None, solver=None
 ) -> pl.DataFrame:
-    """Attribution blocks over the support ``I(b;y)`` with per-block totals
+    """Attribution blocks over the support with per-block totals
     ``W_{G_r} = sum_{i in G_r} b_i mu_i`` (invariant across the optimal face).
-
-    Returns one row per block: the member constraints (labelled) and ``W``.  If
-    ``mu`` is not given, a support solve provides one (any face point works,
-    since ``W`` is face-invariant)."""
-    sol = problem.solve(solver=solver)
-    if value is None:
-        value = sol.value
+    If ``mu`` is omitted a support solve supplies one (any face point works)."""
     if mu is None:
-        mu = sol.mu
-
-    _, hi = robust_bounds(problem, value=value, solver=solver)
+        mu = problem.solve(solver=solver).mu
+    _, hi = robust_bounds(problem, solver=solver)
     index = support_index(hi)
-    C = trade_matrix(problem, index)
-    blocks = connected_blocks(C)
+    blocks = connected_blocks(trade_matrix(problem, index))
 
-    labels = problem.model.system.labels()
+    labels = problem.model.labels()
     b = problem.data.b
     records = []
     for r, cols in enumerate(blocks):
@@ -245,17 +195,13 @@ def attribution_blocks(
 
 
 def discrepancy(dam: NetworkModel, ftr: NetworkModel) -> dict[str, np.ndarray]:
-    """Rows where the FTR and DAM limit vectors differ (pitch sec. 3.2).
+    """Rows where FTR and DAM limits differ (pitch sec. 3.2), on a common index.
 
-    Requires the two models share a system.  ``D_plus`` = rows where FTR is
-    looser (``g > f``, underfunding-driving); ``D_minus`` = FTR tighter
-    (``g < f``, hedging-inefficiency-driving).  ``+inf`` (absent) counts as
-    looser than any finite limit.
+    The two models are aligned internally.  ``D_plus`` = rows where FTR is looser
+    (``g > f``, underfunding-driving); ``D_minus`` = FTR tighter (``g < f``,
+    hedging-inefficiency-driving).  ``+inf`` (unmonitored) is looser than any
+    finite limit.
     """
-    if dam.system is not ftr.system:
-        raise ValueError("models must share a StackedSystem; use shared_system/embed")
-    f, g = dam.b, ftr.b
-    return {
-        "D_plus": np.where(g > f)[0],
-        "D_minus": np.where(g < f)[0],
-    }
+    dam_u, ftr_u = align(dam, ftr)
+    f, g = dam_u.b, ftr_u.b
+    return {"D_plus": np.where(g > f)[0], "D_minus": np.where(g < f)[0]}

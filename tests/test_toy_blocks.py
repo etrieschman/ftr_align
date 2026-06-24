@@ -27,12 +27,12 @@ CLEAR = "CLARABEL"
 
 def test_redundant_face_and_trade():
     case = toy.build_redundant_case()
-    sys = case.dam_model.system
+    sys = case.dam_model
     # the two parallel circuits are electrically identical
     assert np.allclose(sys.A[sys.rows_upper(None)[toy.SL]], sys.A[sys.rows_upper(None)[1]])
 
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.y)
+    prob = SupportProblem(case.dam_model, dam.direction)
     # value still matches the oracle (electrically the base toy)
     assert prob.solve(solver=CLEAR).value == pytest.approx(32625, abs=2)
 
@@ -56,7 +56,7 @@ def test_redundant_face_and_trade():
 def test_redundant_single_block():
     case = toy.build_redundant_case()
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    blocks = attribution_blocks(SupportProblem(case.dam_model, dam.y), solver=CLEAR)
+    blocks = attribution_blocks(SupportProblem(case.dam_model, dam.direction), solver=CLEAR)
     assert blocks.height == 1
     assert blocks["size"][0] == 2
     assert blocks["W"][0] == pytest.approx(32625, abs=2)
@@ -67,11 +67,11 @@ def test_block_total_is_face_invariant():
     multipliers differ (CLARABEL spreads weight, HiGHS puts it on one twin)."""
     case = toy.build_redundant_case()
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.y)
+    prob = SupportProblem(case.dam_model, dam.direction)
 
     mu_clarabel = prob.solve(solver="CLARABEL").mu
     mu_highs = prob.solve(solver="HIGHS").mu
-    sl = case.dam_model.system.rows_upper(None)[:2]
+    sl = case.dam_model.rows_upper(None)[:2]
     # the split genuinely differs between solvers...
     assert not np.allclose(mu_clarabel[sl], mu_highs[sl], atol=1.0)
 
@@ -86,7 +86,7 @@ def test_unique_dual_gives_singletons():
     binding constraint is its own block."""
     case = toy.build_case("derate")
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.y)
+    prob = SupportProblem(case.dam_model, dam.direction)
 
     _, hi = robust_bounds(prob, solver=CLEAR)
     index = support_index(hi)

@@ -1,32 +1,32 @@
-"""Network geometry: PTDF, contingencies, the stacked constraint system, and the
-network model that layers limits on top of it.
+"""Network geometry: PTDF, contingencies (each carrying its own line ratings),
+and the network model that assembles them into the stacked constraint system.
 
 Notation follows the FTR pitch memo:
 
-* ``K``  -- stacked PTDF, maps nodal injections ``q`` to monitored flows.
+* ``K``  -- PTDF, maps nodal injections ``q`` to monitored flows.
 * ``A = [K; -K]`` -- the stacked constraint matrix.  The first ``C*ell`` rows are
   the upper-limit constraints ``Kq <= b_upper``; the next ``C*ell`` are the
   lower-limit constraints ``-Kq <= -b_lower``.  Rows within a block run over
-  ``(contingency, element)`` in the order of ``contingencies`` then element.
-* a *network model* is the shared geometry ``A`` plus a limit vector ``b``.  DAM
-  and FTR are two models with limit vectors ``f`` and ``g`` over the *same*
-  system, which is what makes the dual-feasible set ``Lambda(y)`` shared.
+  ``(contingency, element)`` in contingency order, then element.
 
-The limit vector ``b``, the certificate ``y``, and the dual multipliers ``mu``
-are all full-length vectors over the rows of ``A``, so they line up entrywise.
+A ``NetworkModel`` owns its geometry: a network plus a list of contingencies,
+each of which carries the line ratings enforced *under that contingency*.  It
+derives ``A`` and the limit vector ``b``.  DAM and FTR are two such models,
+defined independently; comparison of their per-row duals needs :func:`embed` /
+:func:`align` to put them on a common row index (see those for the caveat that
+this requires common PTDFs).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Hashable
 
 import numpy as np
 import polars as pl
 
 # A contingency key:  None -> base case;  int -> single-element outage;
 #                     tuple[int, ...] -> multi-element outage.
-ContingencyKey = Hashable
+ContingencyKey = int | tuple[int, ...] | None
 
 
 # ----------------------------------------------------------------------------
@@ -63,18 +63,19 @@ class PhysicalNetwork:
     def n_elements(self) -> int:
         return self.inc.shape[1]
 
-    def ptdf(self, outage_elements: list[int] | None = None) -> np.ndarray:
-        """PTDF with ``outage_elements`` removed (incidence columns zeroed, so
-        outaged elements carry no flow)."""
+    def ptdf(self, outage: ContingencyKey = None) -> np.ndarray:
+        """PTDF with the contingency's elements removed (incidence columns
+        zeroed, so outaged elements carry no flow)."""
         inc = np.array(self.inc, dtype=float, copy=True)
-        if outage_elements:
-            inc[:, outage_elements] = 0.0
+        out = _outage_elements(outage)
+        if out:
+            inc[:, out] = 0.0
         return compute_ptdf(inc, self.x, self.slack_idx)
 
 
-def outage_elements(key: ContingencyKey) -> list[int] | None:
+def _outage_elements(key: ContingencyKey) -> list[int]:
     if key is None:
-        return None
+        return []
     if isinstance(key, (int, np.integer)):
         return [int(key)]
     return list(key)
@@ -89,44 +90,78 @@ def contingency_label(key: ContingencyKey, element_names=None) -> str:
 
 
 # ----------------------------------------------------------------------------
-# Stacked constraint system  (the shared geometry A = [K; -K])
+# Contingency: an outage together with the ratings enforced under it
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
-class StackedSystem:
+class Contingency:
+    """An outage (``key``) and the line ratings enforced under it.  ``upper`` and
+    ``lower`` are per-element flow limits (set them equal for symmetric limits;
+    use ``+inf`` to leave an element unmonitored under this contingency)."""
+
+    key: ContingencyKey
+    upper: np.ndarray  # (ell,)
+    lower: np.ndarray  # (ell,)
+
+
+# ----------------------------------------------------------------------------
+# Network model: geometry (A) + limits (b), assembled from contingencies
+# ----------------------------------------------------------------------------
+@dataclass(frozen=True)
+class NetworkModel:
+    """A network model owns its geometry.  Build it with :meth:`build` from a
+    network and a list of :class:`Contingency`; it assembles ``A = [K; -K]`` and
+    the stacked limit vector ``b``.  ``b`` and any per-row vector (a certificate
+    ``y``, duals ``mu``) line up entrywise over the rows of ``A``."""
+
     network: PhysicalNetwork
-    contingencies: list[ContingencyKey]  # universe ordering
+    contingencies: tuple[Contingency, ...]
     A: np.ndarray  # (2 * C * ell, n), dense
+    b: np.ndarray  # (2 * C * ell,) limits; +inf marks an unmonitored row
+
+    @classmethod
+    def build(
+        cls, network: PhysicalNetwork, contingencies: list[Contingency]
+    ) -> NetworkModel:
+        conts = tuple(contingencies)
+        k = np.vstack([network.ptdf(c.key) for c in conts])
+        A = np.vstack([k, -k])
+        b = np.concatenate(
+            [np.concatenate([c.upper for c in conts]),
+             np.concatenate([c.lower for c in conts])]
+        )
+        return cls(network=network, contingencies=conts, A=A, b=b)
+
+    @property
+    def keys(self) -> list[ContingencyKey]:
+        return [c.key for c in self.contingencies]
+
+    @property
+    def ell(self) -> int:
+        return self.network.n_elements
 
     @property
     def n_rows(self) -> int:
         return self.A.shape[0]
 
     @property
-    def ell(self) -> int:
-        return self.network.n_elements
-
-    def _block_start(self, key: ContingencyKey) -> int:
-        return self.contingencies.index(key) * self.ell
+    def active(self) -> np.ndarray:
+        """Rows with finite limits (monitored)."""
+        return np.isfinite(self.b)
 
     def rows_upper(self, key: ContingencyKey) -> np.ndarray:
-        """Row indices for a contingency's elements in the upper-limit block."""
-        s = self._block_start(key)
+        s = self.keys.index(key) * self.ell
         return np.arange(s, s + self.ell)
 
     def rows_lower(self, key: ContingencyKey) -> np.ndarray:
-        """Row indices for a contingency's elements in the lower-limit block."""
         half = len(self.contingencies) * self.ell
-        s = self._block_start(key)
+        s = self.keys.index(key) * self.ell
         return np.arange(half + s, half + s + self.ell)
 
     def labels(self) -> pl.DataFrame:
-        """Per-row identity (contingency, element, side) -- built on demand for
-        output tables, not stored."""
+        """Per-row identity (contingency, element, side) -- for output tables."""
         ell = self.ell
         names = self.network.element_names
-        conts = [
-            contingency_label(c, names) for c in self.contingencies for _ in range(ell)
-        ]
+        conts = [contingency_label(c.key, names) for c in self.contingencies for _ in range(ell)]
         elems = [
             str(names[i]) if names is not None else str(i)
             for _ in self.contingencies
@@ -142,108 +177,48 @@ class StackedSystem:
         )
 
 
-def build_stacked_system(
-    network: PhysicalNetwork, contingencies: list[ContingencyKey]
-) -> StackedSystem:
-    """Assemble ``A = [K; -K]`` over the given contingency universe."""
-    k = np.vstack([network.ptdf(outage_elements(c)) for c in contingencies])
-    A = np.vstack([k, -k])
-    return StackedSystem(network=network, contingencies=list(contingencies), A=A)
-
-
+# ----------------------------------------------------------------------------
+# Result-conversion tools: put two models' per-row vectors on a common index
+# ----------------------------------------------------------------------------
 def embed(
-    values: np.ndarray, source: StackedSystem, target: StackedSystem, fill: float = 0.0
+    values: np.ndarray, source: NetworkModel, target: NetworkModel, fill: float = 0.0
 ) -> np.ndarray:
-    """Re-express a per-row vector (a limit vector ``b``, a certificate ``y``, or
-    a dual ``mu``) from ``source`` rows onto ``target`` rows, matching by
-    ``(contingency, element, side)``.  Rows of ``target`` absent from ``source``
-    get ``fill`` (0 for ``y``/``mu``, ``inf`` for ``b``)."""
+    """Re-express a per-row vector (a certificate ``y`` or a dual ``mu``) from
+    ``source`` rows onto ``target`` rows, matching by ``(contingency, element,
+    side)``.  Target rows absent from source get ``fill`` (0 for ``y``/``mu``).
+
+    Needed only for *row-level* cross-model comparison (e.g. lining up
+    ``mu_f`` and ``mu_g``); support values and the gap use the node-space
+    direction and need no alignment.  Valid only under common PTDFs.
+    """
     out = np.full(target.n_rows, fill)
-    for key in source.contingencies:
-        if key in target.contingencies:
+    source_keys = set(source.keys)
+    for key in target.keys:
+        if key in source_keys:
             out[target.rows_upper(key)] = values[source.rows_upper(key)]
             out[target.rows_lower(key)] = values[source.rows_lower(key)]
     return out
 
 
 def align(*models: NetworkModel) -> list[NetworkModel]:
-    """Map independently-defined models onto one common (union) stacked system,
-    matching constraints by ``(contingency, element, side)``.
-
-    This is the mapping required for any cross-model comparison: ``Delta(g,f;y)``
-    and the shared dual-feasible set ``Lambda(y)`` (Corollary 1) only exist when
-    ``f``, ``g`` and the certificate ``y`` live over one common ``A``.  After
-    ``align``, ``b``, ``y`` and ``mu`` line up entrywise across the models.
-
-    Valid under Assumption 1 (common PTDFs across markets).  If two markets use
-    *different* PTDFs for the same contingency, no common ``A`` exists and this
-    comparison does not apply.
-    """
-    network = models[0].system.network
+    """Rebuild several models onto one common (union) contingency set so their
+    rows line up entrywise.  Contingencies a model does not enforce are added
+    with ``+inf`` ratings (unmonitored).  Used for row-level attribution
+    comparison; not required to compute support values or the gap."""
+    network = models[0].network
     union: list[ContingencyKey] = []
     for model in models:
-        for key in model.system.contingencies:
+        for key in model.keys:
             if key not in union:
                 union.append(key)
-    system = build_stacked_system(network, union)
-    return [
-        NetworkModel(system=system, b=embed(m.b, m.system, system, fill=np.inf))
-        for m in models
-    ]
 
-
-# ----------------------------------------------------------------------------
-# Network model  (geometry + limit vector)
-# ----------------------------------------------------------------------------
-@dataclass(frozen=True)
-class NetworkModel:
-    """Shared ``system`` + this model's limit vector ``b`` (full length over
-    ``system`` rows; ``+inf`` on rows the model does not enforce, so the
-    corresponding ``mu`` is pinned to zero)."""
-
-    system: StackedSystem
-    b: np.ndarray  # (n_rows,)
-
-    @property
-    def active(self) -> np.ndarray:
-        """Rows with finite limits (enforced)."""
-        return np.isfinite(self.b)
-
-    @property
-    def enforced(self) -> list[ContingencyKey]:
-        """Contingencies with at least one enforced row, in universe order."""
-        out = []
-        for key in self.system.contingencies:
-            if np.isfinite(self.b[self.system.rows_upper(key)]).any():
-                out.append(key)
-        return out
-
-    @classmethod
-    def from_symmetric_limits(
-        cls,
-        system: StackedSystem,
-        enforced: list[ContingencyKey],
-        limits: np.ndarray,  # (ell,) per-element |flow| limit
-    ) -> "NetworkModel":
-        """Place a model on an existing ``system``, enforcing ``enforced`` with
-        symmetric upper=lower limits (rows of unenforced contingencies are
-        inactive)."""
-        limits = np.asarray(limits, dtype=float)
-        b = np.full(system.n_rows, np.inf)
-        for key in enforced:
-            b[system.rows_upper(key)] = limits
-            b[system.rows_lower(key)] = limits
-        return cls(system=system, b=b)
-
-    @classmethod
-    def build(
-        cls,
-        network: PhysicalNetwork,
-        contingencies: list[ContingencyKey],
-        limits: np.ndarray,  # (ell,) per-element |flow| limit
-    ) -> "NetworkModel":
-        """Define a model *independently*: build its own stacked system over its
-        ``contingencies`` (all enforced).  Apply a derate by scaling ``limits``.
-        Use :func:`align` before comparing two such models."""
-        system = build_stacked_system(network, contingencies)
-        return cls.from_symmetric_limits(system, contingencies, limits)
+    ell = network.n_elements
+    out = []
+    for model in models:
+        by_key = {c.key: c for c in model.contingencies}
+        conts = [
+            by_key.get(key, Contingency(key, np.full(ell, np.inf), np.full(ell, np.inf)))
+            for key in union
+        ]
+        out.append(NetworkModel.build(network, conts))
+    return out

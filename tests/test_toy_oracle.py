@@ -40,8 +40,8 @@ def test_table_ii(key):
 
     case = toy.build_case(difference)
     dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(case.dam_model, dam.y).solve(solver=CLEAR_SOLVER)
-    h_g = SupportProblem(case.ftr_model, dam.y).solve(solver=CLEAR_SOLVER)
+    h_f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    h_g = SupportProblem(case.ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
 
     assert h_f.value == pytest.approx(ms_exp, abs=2)
     assert gap(h_g, h_f) == pytest.approx(delta_exp, abs=2)
@@ -54,7 +54,7 @@ def test_merch_surplus_equals_support_value(key):
     difference, pattern = key
     case = toy.build_case(difference)
     dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(case.dam_model, dam.y).solve(solver=CLEAR_SOLVER)
+    h_f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
     assert dam.merch_surp == pytest.approx(h_f.value, abs=1.0)
 
 
@@ -64,7 +64,7 @@ def test_strong_duality(key):
     difference, pattern = key
     case = toy.build_case(difference)
     dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    prob = SupportProblem(case.ftr_model, dam.y)
+    prob = SupportProblem(case.ftr_model, dam.direction)
     sol = prob.solve(solver=CLEAR_SOLVER, want_primal=True)
     primal_value = float(sol.q @ prob.data.direction)
     assert primal_value == pytest.approx(sol.value, abs=1.0)

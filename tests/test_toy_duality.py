@@ -46,8 +46,8 @@ def test_table_iii(key):
     case = toy.build_case(difference)
     dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
 
-    f = SupportProblem(case.dam_model, dam.y).solve(solver=CLEAR_SOLVER)
-    g = SupportProblem(case.ftr_model, dam.y).solve(solver=CLEAR_SOLVER)
+    f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    g = SupportProblem(case.ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
     got_f = _as_dict(net_dual(case.dam_model, f.mu))
     got_g = _as_dict(net_dual(case.ftr_model, g.mu))
 
@@ -62,14 +62,14 @@ def test_toy_duals_are_unique():
     case = toy.build_case("dam_outage")
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR_SOLVER)
     for model in (case.dam_model, case.ftr_model):
-        lo, hi = robust_bounds(SupportProblem(model, dam.y), solver=CLEAR_SOLVER)
+        lo, hi = robust_bounds(SupportProblem(model, dam.direction), solver=CLEAR_SOLVER)
         assert np.allclose(lo, hi, atol=1e-4)
 
 
 def test_classification():
     case = toy.build_case("derate")
     dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR_SOLVER)
-    lo, hi = robust_bounds(SupportProblem(case.dam_model, dam.y), solver=CLEAR_SOLVER)
+    lo, hi = robust_bounds(SupportProblem(case.dam_model, dam.direction), solver=CLEAR_SOLVER)
     classes = classify(lo, hi)
     # pattern (a): exactly the base:SL upper row binds, nothing degenerate
     assert classes.count("binding") == 1

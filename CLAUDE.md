@@ -9,36 +9,41 @@ rewriting per network.
 ## Locked design decisions (do not relitigate — settled over a long planning pass)
 
 - **One network solve is the primitive**, not a DAM-vs-FTR pair. A `NetworkModel`
-  = geometry `A = [K; −K]` + a limit vector `b`. DAM and FTR are two models
-  (`f`, `g`). Alignment is a function over two solves: `gap(sol_g, sol_f)`.
-- **Models are defined independently**, each with its own `StackedSystem`
-  (`NetworkModel.build(net, contingencies, limits)`). To compare two models you
-  **must** `align(*models)` them onto a common (union) stacked system — this is
-  mathematically required, not convenience: `Δ(g,f;y)` and the shared
-  dual-feasible set `Λ(y)` (Corollary 1) only exist when `f`, `g`, and the
-  certificate `y` live over one common `A`. `align` matches rows by
-  `(contingency, element, side)`; `embed` re-expresses a single vector.
-  Valid only under **Assumption 1 (common PTDFs)**. ERCOT's different-PTDF case
-  breaks shared `Λ(y)` — flagged, separate, not yet handled.
-- After alignment, `b`, `y`, `μ` are **co-indexed full-length vectors** over the
-  system rows. Inactive rows (contingencies a model doesn't enforce): `b = +inf`,
-  `μ` pinned to 0. `active = np.isfinite(b)`.
-- `SupportProblem` is **dual-form** (`min bᵀμ s.t. Aᵀμ + 1s = Aᵀy, μ ≥ 0`) so the
+  owns its geometry: a `PhysicalNetwork` + a tuple of `Contingency` (each carrying
+  the line ratings enforced under it). `NetworkModel.build(net, contingencies)`
+  assembles `A = [K; −K]` and the stacked limit vector `b`. There is **no separate
+  `StackedSystem`** — it was folded into `NetworkModel`.
+- **Support is parametrized by a node-space direction `d ∈ Rⁿ`**, not a row-space
+  certificate. `SupportProblem(model, direction)`; `h_Q(d) = max_{q∈Q} dᵀq`.
+  Because `d` lives in node space (shared by every model on the network), DAM and
+  FTR support **values and the gap need NO alignment** — each solves on its own
+  polytope with the same `d`. This was the key correction: alignment is *not*
+  required for `Δ`. `clear_dam` returns the DAM certificate `y*` (over its own
+  rows) **and** `direction = A_damᵀ y*`.
+- **`align`/`embed` are result-conversion tools, used ONLY for row-level
+  cross-model comparison** (lining up `μ_f`/`μ_g`, `D±`, joint blocks) — not
+  preprocessing before a solve. `embed(values, source, target)` matches rows by
+  `(contingency, element, side)`; `align(*models)` rebuilds onto a union
+  contingency set (unenforced contingencies added with `+inf` ratings). Valid
+  only under **Assumption 1 (common PTDFs)**; ERCOT's different-PTDF case is
+  flagged, separate, not yet handled.
+- `b` and per-row vectors (`μ`) are **co-indexed full-length vectors** over the
+  model's rows. Unmonitored rows: `b = +inf`, `μ` pinned to 0.
+  `active = np.isfinite(b)`.
+- `SupportProblem` is **dual-form** (`min bᵀμ s.t. Aᵀμ + 1s = d, μ ≥ 0`) so the
   multipliers `μ` are variables. `.data` is a typed numpy bundle (`SupportData`:
-  `A, b, y` → `active`/`direction` properties). `.solve()` returns an immutable
-  `SupportSolution` value (so results compose over sets of `y`).
-- **Solver seam = one branch**: `solve(solver=...)` passes a CVXPY solver *name*
-  (str) straight through (off-the-shelf + commercial). Any non-str object is a
-  custom solver, called as `solver.solve(problem) -> SupportSolution`. Erich's
+  `A, b, direction` → `active` property). `.solve()` returns an immutable
+  `SupportSolution` value.
+- **Solver seam = one branch**: `solve(solver=...)` with a CVXPY solver *name*
+  (str) or `None` runs `solve_support_cvxpy` (default backend); any other object
+  is a custom solver called as `solver.solve(problem) -> SupportSolution`. Erich's
   future ex-ante solver will *orchestrate* CVXPY LP subproblems (bilinear, over a
   union of polyhedra), not replace CVXPY.
+- Assembly functions (`dual_feasible`, `support_objective`, `network_constraints`
+  in `solve.py`) accept numpy **or** cvxpy args and are reused by `solve` and
+  `duality` (one definition each — no re-spelling).
 - `A` is **dense numpy** — PTDF is structurally dense, so sparse storage wastes.
   The scale lever is active-set / column-generation, not sparse storage.
-- Certificate `y` is **stacked-nonnegative** over rows and multiplies `Aᵀ` (not
-  `Kᵀ`). Store `y`, not the derived direction `d = Aᵀy`.
-- Assembly functions (`dual_feasible`, `support_objective`, `network_constraints`)
-  accept numpy **or** cvxpy args, so the same pieces build the ex-post LP and the
-  future ex-ante bilinear program.
 
 ## Degeneracy convention
 
@@ -54,14 +59,15 @@ tolerance (`CLASS_TOL`) must exceed the face-construction leak (`FACE_TOL`).
 
 ```
 ftr_align/
-  network.py    PTDF, contingencies, StackedSystem, NetworkModel,
-                build/from_symmetric_limits, align, embed
-  solve.py      SupportData, SupportProblem (dual form), SupportSolution,
-                DamInstance, DamResult, clear_dam
-  duality.py    robust_bounds, classify, net_dual, discrepancy,
-                support_index, trade_matrix, trade_space (D=ker C),
-                connected_blocks (matroid components), attribution_blocks
-  metrics.py    gap(), ratio()
+  network.py    PTDF, PhysicalNetwork, Contingency (key + ratings),
+                NetworkModel (owns A & b), align, embed
+  solve.py      assembly fns (dual_feasible/support_objective/network_constraints),
+                SupportData, SupportProblem, solve_support_cvxpy, SupportSolution,
+                DamInstance, DamResult, clear_dam (returns y* and direction)
+  duality.py    robust_bounds, classify, net_dual, support_index, trade_matrix,
+                trade_space (D=ker C), connected_blocks (matroid components via
+                QR fundamental circuits), attribution_blocks, discrepancy
+  metrics.py    gap(), ratio(), alignment_summary (Table II), dual_summary (Table III)
   cases/toy.py  3-node oracle + build_redundant_case (double-circuit variant)
 tests/          oracle tests: Tables II & III, strong duality, blocks, align
 ```
@@ -69,7 +75,7 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 (jupytext `# %%`). Planned: `scenarios.py` (`build_dam_instance` = inverse of
 `clear_dam`, a tested roundtrip), `analysis/` (alignment, viz_toy, viz_large).
 
-## Status (2026-06-24): slices 1–3 done, 45 tests pass
+## Status (2026-06-24): slices 1–3 done, 46 tests pass
 
 - Table II (`MS_DAM`, `Δ`, `η`) and Table III (`μ_f`, `μ_g`) reproduced exactly.
 - Robust `μ` bounds + binding/degenerate/slack classification.

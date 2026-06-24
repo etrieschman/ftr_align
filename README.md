@@ -14,23 +14,29 @@ without rewriting core logic per network.
 
 ## Core idea
 
-The primitive is **one network solve**. A *network model* is geometry
-`A = [K; −K]` plus a limit vector `b`. DAM and FTR are defined independently
-(each with its own contingencies/system); `align()` maps them onto a common
-stacked system — required because `Δ(g, f; y)` and the shared dual-feasible set
-`Λ(y)` only exist when `f`, `g`, and `y` live over one common `A`. After
-alignment, `b`, `y`, and `μ` are co-indexed, and `Δ = h(g; y) − h(f; y)`.
+The primitive is **one network solve**. A `NetworkModel` owns its geometry: a
+network plus `Contingency` objects (each carrying the line ratings enforced
+under it), from which it assembles `A = [K; −K]` and the limit vector `b`.
+
+The support function is parametrized by a **node-space direction** `d ∈ Rⁿ`:
+`h_Q(d) = max_{q∈Q} dᵀq`. Since `d` is shared by every model on the network, DAM
+and FTR support values and the gap `Δ = h(g; d) − h(f; d)` need **no alignment** —
+each solves on its own polytope. `clear_dam` returns the DAM certificate `y*` and
+the induced `direction = Aᵀy*`. `align`/`embed` are used only to put two models'
+per-row duals (`μ_f`, `μ_g`) on a common index for attribution comparison.
 
 ## Layout
 
 ```
 ftr_align/
-  network.py    geometry: PTDF, contingencies, StackedSystem, NetworkModel;
-                align() maps independently-defined models onto a common index
-  solve.py      SupportProblem (dual form), SupportSolution, clear_dam
-  duality.py    Λ*(b;y): robust μ bounds, binding/degenerate/slack classification,
-                signed net duals, DAM/FTR limit discrepancy
-  metrics.py    gap(), ratio()
+  network.py    geometry: PTDF, Contingency (key + ratings), NetworkModel
+                (owns A & b); align()/embed() for row-level result comparison
+  solve.py      SupportProblem (direction-parametrized, dual form),
+                SupportSolution, clear_dam (-> certificate y* and direction)
+  duality.py    Λ*: robust μ bounds, binding/degenerate/slack classification,
+                signed net duals, trade space D=ker C, attribution blocks,
+                DAM/FTR limit discrepancy
+  metrics.py    gap(), ratio(), alignment_summary (II), dual_summary (III)
   cases/toy.py  3-node oracle (PowerUp Appendix B)
 tests/          oracle tests: Tables II & III, strong duality, Prop. 1
 ```

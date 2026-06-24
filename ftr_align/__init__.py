@@ -1,11 +1,10 @@
 """ftr_align -- FTR/DAM structural misalignment via support-function geometry."""
 
 from .network import (
+    Contingency,
     NetworkModel,
     PhysicalNetwork,
-    StackedSystem,
     align,
-    build_stacked_system,
     compute_ptdf,
     embed,
 )
@@ -16,15 +15,15 @@ from .solve import (
     SupportProblem,
     SupportSolution,
     clear_dam,
+    solve_support_cvxpy,
 )
-from .metrics import gap, ratio
+from .metrics import alignment_summary, dual_summary, gap, ratio
 
 __all__ = [
+    "Contingency",
     "NetworkModel",
     "PhysicalNetwork",
-    "StackedSystem",
     "align",
-    "build_stacked_system",
     "compute_ptdf",
     "embed",
     "DamInstance",
@@ -33,6 +32,9 @@ __all__ = [
     "SupportProblem",
     "SupportSolution",
     "clear_dam",
+    "solve_support_cvxpy",
+    "alignment_summary",
+    "dual_summary",
     "gap",
     "ratio",
 ]

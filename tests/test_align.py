@@ -1,57 +1,56 @@
-"""Independently-defined models with different contingency lists are mapped
-onto a common index by align(); verify the mapping lines rows up correctly.
+"""Independently-defined models with different contingency lists are mapped onto
+a common row index by align()/embed() for row-level comparison.  (Support values
+and the gap don't need this -- they use the node-space direction.)
 """
 
 import numpy as np
 
-from ftr_align import NetworkModel, align, clear_dam, SupportProblem, gap
+from ftr_align import Contingency, NetworkModel, align, embed
 from ftr_align.cases import toy
 
 
-def test_independent_models_have_distinct_systems_then_align():
-    net = toy.toy_network()
-    # DAM: base only.  FTR: base + SL outage.  Defined independently.
-    dam = NetworkModel.build(net, [None], toy.BASE_LIMITS)
-    ftr = NetworkModel.build(net, [None, toy.SL], toy.BASE_LIMITS)
+def _model(net, keys, limits):
+    limits = np.asarray(limits, dtype=float)
+    return NetworkModel.build(net, [Contingency(k, limits.copy(), limits.copy()) for k in keys])
 
-    # independently they have different geometries
-    assert dam.system is not ftr.system
-    assert dam.system.n_rows != ftr.system.n_rows
+
+def test_independent_models_have_distinct_geometries():
+    net = toy.toy_network()
+    dam = _model(net, [None], toy.BASE_LIMITS)            # base only
+    ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)    # base + SL outage
+    assert dam.n_rows != ftr.n_rows
+    assert dam.keys == [None]
+    assert ftr.keys == [None, toy.SL]
+
+
+def test_align_to_common_index():
+    net = toy.toy_network()
+    dam = _model(net, [None], toy.BASE_LIMITS)
+    ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)
 
     dam_u, ftr_u = align(dam, ftr)
-
-    # after align: one shared system, rows aligned
-    assert dam_u.system is ftr_u.system
-    assert dam_u.system.contingencies == [None, toy.SL]
-    # DAM does not enforce the SL-outage rows -> inactive (inf) after mapping
-    sl_rows = np.concatenate(
-        [dam_u.system.rows_upper(toy.SL), dam_u.system.rows_lower(toy.SL)]
-    )
+    # common geometry, union contingency order
+    assert dam_u.keys == ftr_u.keys == [None, toy.SL]
+    assert dam_u.n_rows == ftr_u.n_rows
+    # DAM does not enforce the SL-outage rows -> unmonitored (inf) after mapping
+    sl_rows = np.concatenate([dam_u.rows_upper(toy.SL), dam_u.rows_lower(toy.SL)])
     assert np.isinf(dam_u.b[sl_rows]).all()
     assert np.isfinite(ftr_u.b[sl_rows]).all()
-    # base rows preserved through the mapping
-    base_u = dam_u.system.rows_upper(None)
-    assert np.allclose(dam_u.b[base_u], toy.BASE_LIMITS)
+    # base ratings preserved
+    assert np.allclose(dam_u.b[dam_u.rows_upper(None)], toy.BASE_LIMITS)
 
 
-def test_align_order_independent():
-    """Aligning (dam, ftr) vs (ftr, dam) gives the same support values."""
+def test_embed_vector_matches_by_identity():
     net = toy.toy_network()
-    dam = NetworkModel.build(net, [None, toy.SC], toy.BASE_LIMITS)
-    ftr = NetworkModel.build(net, [None], toy.BASE_LIMITS)
-    inst = toy.instance("(a)")
+    dam = _model(net, [None], toy.BASE_LIMITS)
+    ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)
 
-    dam_u, ftr_u = align(dam, ftr)
-    y = clear_dam(dam_u, inst, solver="CLARABEL").y
-    delta1 = gap(
-        SupportProblem(ftr_u, y).solve(solver="CLARABEL"),
-        SupportProblem(dam_u, y).solve(solver="CLARABEL"),
-    )
+    # a per-row vector on the DAM rows, embedded onto the (larger) FTR rows
+    mu_dam = np.zeros(dam.n_rows)
+    mu_dam[dam.rows_upper(None)[toy.SL]] = 7.0
+    mu_ftr = embed(mu_dam, dam, ftr)
 
-    ftr_v, dam_v = align(ftr, dam)
-    y2 = clear_dam(dam_v, inst, solver="CLARABEL").y
-    delta2 = gap(
-        SupportProblem(ftr_v, y2).solve(solver="CLARABEL"),
-        SupportProblem(dam_v, y2).solve(solver="CLARABEL"),
-    )
-    assert delta1 == delta2
+    assert mu_ftr[ftr.rows_upper(None)[toy.SL]] == 7.0
+    # FTR-only contingency rows have no source -> filled with 0
+    assert mu_ftr[ftr.rows_upper(toy.SL)].sum() == 0.0
+    assert mu_ftr.shape[0] == ftr.n_rows
