@@ -48,6 +48,9 @@ python3 -m venv .venv
 - Support values (`MS_DAM`, `Δ`, `η`) — reproduces **Table II** exactly.
 - Dual values (`μ_f`, `μ_g`) — reproduces **Table III** exactly.
 - Robust multiplier bounds + binding/degenerate/slack classification.
+- Trade space `D(b;y) = ker C` and matroid-connectivity **attribution blocks**
+  with face-invariant block totals `W_{G_r}`, validated on a double-circuit
+  variant where `Λ*` is genuinely non-singleton.
 
 A note on degeneracy: several toy patterns have a non-unique realized
 certificate `y*` (the [Feng et al., 2012] LMP non-uniqueness the framework
@@ -57,5 +60,5 @@ which interior-point clearing (CLARABEL) produces; the support *value* given
 
 ### Next
 
-Trade space `D(b;y)` and matroid-connectivity attribution blocks; multi-interval
-funding-gap decomposition `δ(T)`; RTS-GMLC; ex-ante design.
+Multi-interval funding-gap decomposition `δ(T)`; misalignment attribution
+(`D±`, block-repair counterfactuals); RTS-GMLC; ex-ante design.
