@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ftr_align"
+version = "0.0.1"
+description = "FTR/DAM structural misalignment via support-function geometry"
+requires-python = ">=3.11"
+dependencies = [
+    "cvxpy==1.7.2",
+    "polars==1.33.1",
+    "scipy",
+    "pydantic>=2.7",
+    "highspy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["ftr_align*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
