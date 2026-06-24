@@ -1,6 +1,6 @@
 """The LP machinery: one *network solve* as the primitive.
 
-The canonical object is the **dual** support problem,
+the **dual** support problem is,
 
     minimize    b^T mu
     subject to  A^T mu + 1 s = A^T y      (this equality system *is* Lambda(y))
@@ -41,9 +41,9 @@ class SupportData:
     """The math of one support problem, no solver attached.  ``b``, ``y`` (and
     later ``mu``) are co-indexed full-length vectors over the system rows."""
 
-    A: np.ndarray          # (n_rows, n)
-    b: np.ndarray          # (n_rows,) limits; +inf on inactive rows
-    y: np.ndarray          # (n_rows,) stacked-nonneg certificate
+    A: np.ndarray  # (n_rows, n)
+    b: np.ndarray  # (n_rows,) limits; +inf on inactive rows
+    y: np.ndarray  # (n_rows,) stacked-nonneg certificate
 
     @property
     def active(self) -> np.ndarray:
@@ -57,11 +57,11 @@ class SupportData:
 
 class SupportSolution(NamedTuple):
     value: float
-    mu: np.ndarray                 # (n_rows,) dual certificate, 0 on inactive rows
-    s: float                       # balance multiplier
+    mu: np.ndarray  # (n_rows,) dual certificate, 0 on inactive rows
+    s: float  # balance multiplier
     status: str
-    q: np.ndarray | None = None    # primal optimizer (node injections), if requested
-    binding: np.ndarray | None = None   # (n_rows,) bool: mu > tol  (the support I(b;y))
+    q: np.ndarray | None = None  # primal optimizer (node injections), if requested
+    binding: np.ndarray | None = None  # (n_rows,) bool: mu > tol  (the support I(b;y))
 
 
 # ----------------------------------------------------------------------------
@@ -146,18 +146,18 @@ class SupportProblem:
 class DamInstance:
     """Bids/offers and fixed loads defining a DAM clearing instance."""
 
-    M_gen: np.ndarray      # (n, n_gen) node x generator
-    M_dem: np.ndarray      # (n, n_dem) node x demand
-    min_gen: np.ndarray    # (n_gen,)
-    max_gen: np.ndarray    # (n_gen,)
-    p_gen: np.ndarray      # (n_gen,) marginal cost / bid price
-    q_dem: np.ndarray      # (n_dem,) fixed demand
+    M_gen: np.ndarray  # (n, n_gen) node x generator
+    M_dem: np.ndarray  # (n, n_dem) node x demand
+    min_gen: np.ndarray  # (n_gen,)
+    max_gen: np.ndarray  # (n_gen,)
+    p_gen: np.ndarray  # (n_gen,) marginal cost / bid price
+    q_dem: np.ndarray  # (n_dem,) fixed demand
 
 
 class DamResult(NamedTuple):
     value: float
-    q: np.ndarray          # (n,) nodal injections
-    y: np.ndarray          # (n_rows,) stacked-nonneg certificate over model.system
+    q: np.ndarray  # (n,) nodal injections
+    y: np.ndarray  # (n_rows,) stacked-nonneg certificate over model.system
     merch_surp: float
     status: str
 
@@ -175,8 +175,12 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
     q_gen = cp.Variable(inst.M_gen.shape[1], name="q_gen")
     q = cp.Variable(net.n_nodes, name="q")
     inj = inst.M_gen @ q_gen - inst.M_dem @ inst.q_dem
-    constraints = [q == inj, cp.sum(q) == 0,
-                   q_gen >= inst.min_gen, q_gen <= inst.max_gen]
+    constraints = [
+        q == inj,
+        cp.sum(q) == 0,
+        q_gen >= inst.min_gen,
+        q_gen <= inst.max_gen,
+    ]
 
     upper, lower, K = {}, {}, {}
     for key in model.enforced:

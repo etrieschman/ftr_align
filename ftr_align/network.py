@@ -6,7 +6,7 @@ Notation follows the FTR pitch memo:
 * ``K``  -- stacked PTDF, maps nodal injections ``q`` to monitored flows.
 * ``A = [K; -K]`` -- the stacked constraint matrix.  The first ``C*ell`` rows are
   the upper-limit constraints ``Kq <= b_upper``; the next ``C*ell`` are the
-  lower-limit constraints ``-Kq <= b_lower``.  Rows within a block run over
+  lower-limit constraints ``-Kq <= -b_lower``.  Rows within a block run over
   ``(contingency, element)`` in the order of ``contingencies`` then element.
 * a *network model* is the shared geometry ``A`` plus a limit vector ``b``.  DAM
   and FTR are two models with limit vectors ``f`` and ``g`` over the *same*
@@ -14,7 +14,6 @@ Notation follows the FTR pitch memo:
 
 The limit vector ``b``, the certificate ``y``, and the dual multipliers ``mu``
 are all full-length vectors over the rows of ``A``, so they line up entrywise.
-``A`` is dense: PTDF is structurally dense, so sparse storage would not help.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ def compute_ptdf(inc: np.ndarray, x: np.ndarray, slack_idx: int) -> np.ndarray:
 
     y_line = np.diag(1.0 / x)
     y_bus = inc @ y_line @ inc.T
-    keep = np.delete(np.eye(n), slack_idx, axis=0)        # drop slack row
+    keep = np.delete(np.eye(n), slack_idx, axis=0)  # drop slack row
     return y_line @ inc.T @ keep.T @ np.linalg.inv(keep @ y_bus @ keep.T) @ keep
 
 
@@ -50,8 +49,8 @@ def compute_ptdf(inc: np.ndarray, x: np.ndarray, slack_idx: int) -> np.ndarray:
 class PhysicalNetwork:
     """Physical topology common to every contingency."""
 
-    inc: np.ndarray                        # (n, ell) incidence, node x line
-    x: np.ndarray                          # (ell,) reactances
+    inc: np.ndarray  # (n, ell) incidence, node x line
+    x: np.ndarray  # (ell,) reactances
     slack_idx: int = -1
     node_names: np.ndarray | None = None
     element_names: np.ndarray | None = None
@@ -95,8 +94,8 @@ def contingency_label(key: ContingencyKey, element_names=None) -> str:
 @dataclass(frozen=True)
 class StackedSystem:
     network: PhysicalNetwork
-    contingencies: list[ContingencyKey]    # universe ordering
-    A: np.ndarray                          # (2 * C * ell, n), dense
+    contingencies: list[ContingencyKey]  # universe ordering
+    A: np.ndarray  # (2 * C * ell, n), dense
 
     @property
     def n_rows(self) -> int:
@@ -125,9 +124,14 @@ class StackedSystem:
         output tables, not stored."""
         ell = self.ell
         names = self.network.element_names
-        conts = [contingency_label(c, names) for c in self.contingencies for _ in range(ell)]
-        elems = [str(names[i]) if names is not None else str(i)
-                 for _ in self.contingencies for i in range(ell)]
+        conts = [
+            contingency_label(c, names) for c in self.contingencies for _ in range(ell)
+        ]
+        elems = [
+            str(names[i]) if names is not None else str(i)
+            for _ in self.contingencies
+            for i in range(ell)
+        ]
         return pl.DataFrame(
             {
                 "row": np.arange(self.n_rows),
@@ -198,7 +202,7 @@ class NetworkModel:
     corresponding ``mu`` is pinned to zero)."""
 
     system: StackedSystem
-    b: np.ndarray                          # (n_rows,)
+    b: np.ndarray  # (n_rows,)
 
     @property
     def active(self) -> np.ndarray:
@@ -219,7 +223,7 @@ class NetworkModel:
         cls,
         system: StackedSystem,
         enforced: list[ContingencyKey],
-        limits: np.ndarray,                # (ell,) per-element |flow| limit
+        limits: np.ndarray,  # (ell,) per-element |flow| limit
     ) -> "NetworkModel":
         """Place a model on an existing ``system``, enforcing ``enforced`` with
         symmetric upper=lower limits (rows of unenforced contingencies are
@@ -236,7 +240,7 @@ class NetworkModel:
         cls,
         network: PhysicalNetwork,
         contingencies: list[ContingencyKey],
-        limits: np.ndarray,                # (ell,) per-element |flow| limit
+        limits: np.ndarray,  # (ell,) per-element |flow| limit
     ) -> "NetworkModel":
         """Define a model *independently*: build its own stacked system over its
         ``contingencies`` (all enforced).  Apply a derate by scaling ``limits``.
