@@ -12,12 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..network import (
-    ContingencyKey,
-    NetworkModel,
-    PhysicalNetwork,
-    build_stacked_system,
-)
+from ..network import NetworkModel, PhysicalNetwork, align
 from ..solve import DamInstance
 
 NODE_NAMES = np.array(["S", "C", "L"])
@@ -42,26 +37,12 @@ PATTERNS: dict[str, dict] = {
     "(c)": {"q_dem": [100.0], "max_gen": [0.5 * (100.0 - 75.0), 300.0]},
 }
 
-# model differences: (universe contingencies, DAM enforced, FTR enforced, FTR derate)
+# model differences: (DAM contingencies, FTR contingencies, FTR derate).
+# The two markets are defined independently; align() maps them onto the union.
 DIFFERENCES: dict[str, dict] = {
-    "derate": {
-        "universe": [None],
-        "dam": [None],
-        "ftr": [None],
-        "alpha": 0.75,
-    },
-    "extra_ftr": {
-        "universe": [None, SL],
-        "dam": [None],
-        "ftr": [None, SL],
-        "alpha": 1.0,
-    },
-    "dam_outage": {
-        "universe": [None, SC],
-        "dam": [None, SC],
-        "ftr": [None],
-        "alpha": 1.0,
-    },
+    "derate": {"dam": [None], "ftr": [None], "alpha": 0.75},
+    "extra_ftr": {"dam": [None], "ftr": [None, SL], "alpha": 1.0},
+    "dam_outage": {"dam": [None, SC], "ftr": [None], "alpha": 1.0},
 }
 
 
@@ -96,15 +77,13 @@ class ToyCase:
 
 
 def build_case(difference: str) -> ToyCase:
-    """Build the shared stacked system and the DAM/FTR models for a difference."""
+    """Define the DAM and FTR models independently, then align them onto a
+    common stacked system for comparison."""
     spec = DIFFERENCES[difference]
     net = toy_network()
-    universe: list[ContingencyKey] = spec["universe"]
-    system = build_stacked_system(net, universe)
-    dam = NetworkModel.from_symmetric_limits(system, spec["dam"], BASE_LIMITS)
-    ftr = NetworkModel.from_symmetric_limits(
-        system, spec["ftr"], BASE_LIMITS * spec["alpha"]
-    )
+    dam = NetworkModel.build(net, spec["dam"], BASE_LIMITS)
+    ftr = NetworkModel.build(net, spec["ftr"], BASE_LIMITS * spec["alpha"])
+    dam, ftr = align(dam, ftr)
     return ToyCase(
         name=difference,
         dam_model=dam,

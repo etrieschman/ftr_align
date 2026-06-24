@@ -14,18 +14,19 @@ without rewriting core logic per network.
 
 ## Core idea
 
-The primitive is **one network solve**. A *network model* is shared geometry
-`A = [K; −K]` plus a limit vector `b`. DAM and FTR are two models (`f`, `g`)
-over the same `StackedSystem`, so `b`, the certificate `y`, and the duals `μ`
-are co-indexed vectors over the same rows. Alignment is then a function over
-two solves: `Δ = h(g; y) − h(f; y)`.
+The primitive is **one network solve**. A *network model* is geometry
+`A = [K; −K]` plus a limit vector `b`. DAM and FTR are defined independently
+(each with its own contingencies/system); `align()` maps them onto a common
+stacked system — required because `Δ(g, f; y)` and the shared dual-feasible set
+`Λ(y)` only exist when `f`, `g`, and `y` live over one common `A`. After
+alignment, `b`, `y`, and `μ` are co-indexed, and `Δ = h(g; y) − h(f; y)`.
 
 ## Layout
 
 ```
 ftr_align/
-  network.py    geometry: PTDF, contingencies, StackedSystem, NetworkModel,
-                shared_system / embed (index alignment across contingency sets)
+  network.py    geometry: PTDF, contingencies, StackedSystem, NetworkModel;
+                align() maps independently-defined models onto a common index
   solve.py      SupportProblem (dual form), SupportSolution, clear_dam
   duality.py    Λ*(b;y): robust μ bounds, binding/degenerate/slack classification,
                 signed net duals, DAM/FTR limit discrepancy

@@ -147,39 +147,45 @@ def build_stacked_system(
     return StackedSystem(network=network, contingencies=list(contingencies), A=A)
 
 
-def shared_system(
-    network: PhysicalNetwork, *contingency_sets: list[ContingencyKey]
-) -> StackedSystem:
-    """Build one stacked system over the *union* of several contingency sets
-    (deduplicated, in order of first appearance).  Models built on the result
-    have aligned rows, so ``b``, ``y`` and ``mu`` line up entrywise across DAM
-    and FTR even when their enforced contingencies differ.
-
-    Valid under Assumption 1 (common PTDFs across markets).  If FTR and DAM use
-    *different* PTDFs for the same contingency, no shared system exists and the
-    dual-attribution comparison does not apply.
-    """
-    union: list[ContingencyKey] = []
-    for cset in contingency_sets:
-        for key in cset:
-            if key not in union:
-                union.append(key)
-    return build_stacked_system(network, union)
-
-
 def embed(
     values: np.ndarray, source: StackedSystem, target: StackedSystem, fill: float = 0.0
 ) -> np.ndarray:
-    """Re-express a per-row vector (a certificate ``y`` or a dual ``mu``) from
-    ``source`` rows onto ``target`` rows, matching by contingency key.  Rows of
-    ``target`` absent from ``source`` get ``fill`` (0 for ``y``/``mu``, ``inf``
-    for a limit vector ``b``)."""
+    """Re-express a per-row vector (a limit vector ``b``, a certificate ``y``, or
+    a dual ``mu``) from ``source`` rows onto ``target`` rows, matching by
+    ``(contingency, element, side)``.  Rows of ``target`` absent from ``source``
+    get ``fill`` (0 for ``y``/``mu``, ``inf`` for ``b``)."""
     out = np.full(target.n_rows, fill)
     for key in source.contingencies:
         if key in target.contingencies:
             out[target.rows_upper(key)] = values[source.rows_upper(key)]
             out[target.rows_lower(key)] = values[source.rows_lower(key)]
     return out
+
+
+def align(*models: NetworkModel) -> list[NetworkModel]:
+    """Map independently-defined models onto one common (union) stacked system,
+    matching constraints by ``(contingency, element, side)``.
+
+    This is the mapping required for any cross-model comparison: ``Delta(g,f;y)``
+    and the shared dual-feasible set ``Lambda(y)`` (Corollary 1) only exist when
+    ``f``, ``g`` and the certificate ``y`` live over one common ``A``.  After
+    ``align``, ``b``, ``y`` and ``mu`` line up entrywise across the models.
+
+    Valid under Assumption 1 (common PTDFs across markets).  If two markets use
+    *different* PTDFs for the same contingency, no common ``A`` exists and this
+    comparison does not apply.
+    """
+    network = models[0].system.network
+    union: list[ContingencyKey] = []
+    for model in models:
+        for key in model.system.contingencies:
+            if key not in union:
+                union.append(key)
+    system = build_stacked_system(network, union)
+    return [
+        NetworkModel(system=system, b=embed(m.b, m.system, system, fill=np.inf))
+        for m in models
+    ]
 
 
 # ----------------------------------------------------------------------------
@@ -215,11 +221,25 @@ class NetworkModel:
         enforced: list[ContingencyKey],
         limits: np.ndarray,                # (ell,) per-element |flow| limit
     ) -> "NetworkModel":
-        """Build a model with symmetric upper=lower limits on ``enforced``
-        contingencies (the common case; apply a derate by scaling ``limits``)."""
+        """Place a model on an existing ``system``, enforcing ``enforced`` with
+        symmetric upper=lower limits (rows of unenforced contingencies are
+        inactive)."""
         limits = np.asarray(limits, dtype=float)
         b = np.full(system.n_rows, np.inf)
         for key in enforced:
             b[system.rows_upper(key)] = limits
             b[system.rows_lower(key)] = limits
         return cls(system=system, b=b)
+
+    @classmethod
+    def build(
+        cls,
+        network: PhysicalNetwork,
+        contingencies: list[ContingencyKey],
+        limits: np.ndarray,                # (ell,) per-element |flow| limit
+    ) -> "NetworkModel":
+        """Define a model *independently*: build its own stacked system over its
+        ``contingencies`` (all enforced).  Apply a derate by scaling ``limits``.
+        Use :func:`align` before comparing two such models."""
+        system = build_stacked_system(network, contingencies)
+        return cls.from_symmetric_limits(system, contingencies, limits)

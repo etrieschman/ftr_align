@@ -4,8 +4,10 @@ from .network import (
     NetworkModel,
     PhysicalNetwork,
     StackedSystem,
+    align,
     build_stacked_system,
     compute_ptdf,
+    embed,
 )
 from .solve import (
     DamInstance,
@@ -21,8 +23,10 @@ __all__ = [
     "NetworkModel",
     "PhysicalNetwork",
     "StackedSystem",
+    "align",
     "build_stacked_system",
     "compute_ptdf",
+    "embed",
     "DamInstance",
     "DamResult",
     "SupportData",
