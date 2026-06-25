@@ -3,15 +3,24 @@
 Nodes S (solar), C (coal), L (load); lines SL, CL, SC.  Lines SL and SC have
 finite limits (75, 25 MW); CL is effectively unconstrained (300 MW).  Smallest
 instance where every object is hand-checkable; Tables II-III give exact targets.
+
+The fixed data (network, limits, bid structure) plus the paper's cases as
+constants:
+
+  * ``SCENARIOS`` -- the three DAM clearing scenarios (a)/(b)/(c) as
+    ``DamInstance``s (built with :func:`dam_instance`).
+  * ``MODELS`` -- the three DAM/FTR model differences as ``(dam, ftr)`` pairs.
+    Both share ``NETWORK`` and differ only in the contingencies each enforces
+    (and a 0.75 FTR limit derate in ``"derate"``).
+  * ``REDUNDANT_MODELS`` -- the same three differences on the double-circuit
+    network (parallel SLa/SLb), for exercising the non-singleton dual face.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from ..network import Contingency, ContingencyKey, NetworkModel, PhysicalNetwork
+from ..network import Contingency, NetworkModel, PhysicalNetwork
 from ..solve import DamInstance
 
 NODE_NAMES = np.array(["S", "C", "L"])
@@ -22,90 +31,88 @@ SL, CL, SC = 0, 1, 2
 INC = np.array([[1, 0, 1], [0, 1, -1], [-1, -1, 0]], dtype=float)
 X = np.array([1.0, 1.0, 1.0])
 BASE_LIMITS = np.array([75.0, 300.0, 25.0])
+NETWORK = PhysicalNetwork(
+    inc=INC, x=X, slack_idx=-1, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
+)
 
-# DAM bid structure (common to all patterns)
+# DAM bid structure shared by every clearing scenario
 M_GEN = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)  # gS at S, gC at C
 M_DEM = np.array([[0], [0], [1]], dtype=float)  # dL at L
 MIN_GEN = np.zeros(2)
 P_GEN = np.array([5.0, 150.0])
 
-# congestion patterns: (q_dem, max_gen) -- reused across all model differences
-PATTERNS: dict[str, dict] = {
-    "(a)": {"q_dem": [150.0], "max_gen": [150.0, 300.0]},
-    "(b)": {"q_dem": [100.0], "max_gen": [150.0, 300.0]},
-    "(c)": {"q_dem": [100.0], "max_gen": [0.5 * (100.0 - 75.0), 300.0]},
-}
-
-# model differences: DAM contingencies, FTR contingencies, FTR derate.
-DIFFERENCES: dict[str, dict] = {
-    "derate": {"dam": [None], "ftr": [None], "alpha": 0.75},
-    "extra_ftr": {"dam": [None], "ftr": [None, SL], "alpha": 1.0},
-    "dam_outage": {"dam": [None, SC], "ftr": [None], "alpha": 1.0},
-}
-
-
-def toy_network() -> PhysicalNetwork:
-    return PhysicalNetwork(
-        inc=INC, x=X, slack_idx=2,
-        node_names=NODE_NAMES, element_names=ELEMENT_NAMES,
-    )
-
-
-def _symmetric_model(
-    net: PhysicalNetwork, keys: list[ContingencyKey], limits: np.ndarray
-) -> NetworkModel:
-    limits = np.asarray(limits, dtype=float)
-    conts = [Contingency(k, limits.copy(), limits.copy()) for k in keys]
-    return NetworkModel.build(net, conts)
-
-
-def instance(pattern: str) -> DamInstance:
-    p = PATTERNS[pattern]
-    return DamInstance(
-        M_gen=M_GEN, M_dem=M_DEM, min_gen=MIN_GEN,
-        max_gen=np.asarray(p["max_gen"], dtype=float),
-        p_gen=P_GEN, q_dem=np.asarray(p["q_dem"], dtype=float),
-    )
-
-
-@dataclass
-class ToyCase:
-    name: str
-    dam_model: NetworkModel
-    ftr_model: NetworkModel
-    instances: dict[str, DamInstance]
-
-
-def build_case(difference: str) -> ToyCase:
-    """DAM and FTR models defined independently (no alignment needed: the gap
-    uses the node-space direction)."""
-    spec = DIFFERENCES[difference]
-    net = toy_network()
-    dam = _symmetric_model(net, spec["dam"], BASE_LIMITS)
-    ftr = _symmetric_model(net, spec["ftr"], BASE_LIMITS * spec["alpha"])
-    return ToyCase(difference, dam, ftr, {k: instance(k) for k in PATTERNS})
-
-
-# --- redundant (double-circuit) variant ----------------------------------
-# Split line SL into two parallel circuits SLa, SLb, each reactance 2 (combined
-# = 1) and limit 37.5 (combined = 75).  Electrically identical to the base toy,
-# but SLa and SLb have identical PTDF rows -> mu trades between them, Lambda* is
-# non-singleton, and {SLa, SLb} is a genuine size-2 attribution block.
+# redundant (double-circuit) variant: SL split into parallel SLa, SLb (each
+# reactance 2 -> combined 1, limit 37.5 -> combined 75).  Electrically identical
+# to the base toy, but SLa/SLb share a PTDF row, so mu trades between them and
+# {SLa, SLb} is a genuine size-2 attribution block.
 REDUNDANT_ELEMENT_NAMES = np.array(["SLa", "SLb", "CL", "SC"])
 REDUNDANT_INC = np.array([[1, 1, 0, 1], [0, 0, 1, -1], [-1, -1, -1, 0]], dtype=float)
 REDUNDANT_X = np.array([2.0, 2.0, 1.0, 1.0])
 REDUNDANT_LIMITS = np.array([37.5, 37.5, 300.0, 25.0])
+REDUNDANT_NETWORK = PhysicalNetwork(
+    inc=REDUNDANT_INC,
+    x=REDUNDANT_X,
+    slack_idx=-1,
+    node_names=NODE_NAMES,
+    element_names=REDUNDANT_ELEMENT_NAMES,
+)
 
 
-def redundant_network() -> PhysicalNetwork:
-    return PhysicalNetwork(
-        inc=REDUNDANT_INC, x=REDUNDANT_X, slack_idx=2,
-        node_names=NODE_NAMES, element_names=REDUNDANT_ELEMENT_NAMES,
+def dam_instance(q_dem: list[float], max_gen: list[float]) -> DamInstance:
+    """A DAM clearing scenario.  Only demand and the generation caps vary across
+    the toy patterns; the rest of the bid structure is fixed."""
+    return DamInstance(
+        M_gen=M_GEN,
+        M_dem=M_DEM,
+        min_gen=MIN_GEN,
+        max_gen=np.asarray(max_gen, dtype=float),
+        p_gen=P_GEN,
+        q_dem=np.asarray(q_dem, dtype=float),
     )
 
 
-def build_redundant_case() -> ToyCase:
-    net = redundant_network()
-    dam = _symmetric_model(net, [None], REDUNDANT_LIMITS)
-    ftr = _symmetric_model(net, [None], REDUNDANT_LIMITS)
-    return ToyCase("redundant", dam, ftr, {k: instance(k) for k in PATTERNS})
+# --- the paper's cases (PowerUp Tables II-III) ----------------------------
+SCENARIOS: dict[str, DamInstance] = {
+    "(a)": dam_instance(q_dem=[150.0], max_gen=[150.0, 300.0]),
+    "(b)": dam_instance(q_dem=[100.0], max_gen=[150.0, 300.0]),
+    "(c)": dam_instance(q_dem=[100.0], max_gen=[0.5 * (100.0 - 75.0), 300.0]),
+}
+
+_BASE = Contingency(None, BASE_LIMITS)  # base case at full limits
+MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
+    "derate": (
+        NetworkModel.build(NETWORK, [_BASE]),
+        NetworkModel.build(NETWORK, [Contingency(None, 0.75 * BASE_LIMITS)]),
+    ),
+    "extra_ftr": (
+        NetworkModel.build(NETWORK, [_BASE]),
+        NetworkModel.build(NETWORK, [_BASE, Contingency(SL, BASE_LIMITS)]),
+    ),
+    "dam_outage": (
+        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
+        NetworkModel.build(NETWORK, [_BASE]),
+    ),
+}
+
+_REDUNDANT_BASE = Contingency(None, REDUNDANT_LIMITS)
+REDUNDANT_MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
+    "derate": (
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
+        NetworkModel.build(
+            REDUNDANT_NETWORK, [Contingency(None, 0.75 * REDUNDANT_LIMITS)]
+        ),
+    ),
+    "extra_ftr": (
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
+        NetworkModel.build(
+            REDUNDANT_NETWORK,
+            [_REDUNDANT_BASE, Contingency((0, 1), REDUNDANT_LIMITS)],
+        ),
+    ),
+    "dam_outage": (
+        NetworkModel.build(
+            REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
+        ),
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
+    ),
+}

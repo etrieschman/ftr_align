@@ -41,15 +41,15 @@ def _as_dict(df) -> dict:
 
 @pytest.mark.parametrize("key", list(TABLE_III))
 def test_table_iii(key):
-    difference, pattern = key
+    variation, scenario = key
     exp_f, exp_g = TABLE_III[key]
-    case = toy.build_case(difference)
-    dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
+    dam_model, ftr_model = toy.MODELS[variation]
+    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
 
-    f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    g = SupportProblem(case.ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    got_f = _as_dict(net_dual(case.dam_model, f.mu))
-    got_g = _as_dict(net_dual(case.ftr_model, g.mu))
+    f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    got_f = _as_dict(net_dual(dam_model, f.mu))
+    got_g = _as_dict(net_dual(ftr_model, g.mu))
 
     for exp, got in [(exp_f, got_f), (exp_g, got_g)]:
         assert set(got) == set(exp)
@@ -59,30 +59,30 @@ def test_table_iii(key):
 
 def test_toy_duals_are_unique():
     """The 2-D toy has a unique support dual: robust ranges collapse."""
-    case = toy.build_case("dam_outage")
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR_SOLVER)
-    for model in (case.dam_model, case.ftr_model):
+    dam_model, ftr_model = toy.MODELS["dam_outage"]
+    dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
+    for model in (dam_model, ftr_model):
         lo, hi = robust_bounds(SupportProblem(model, dam.direction), solver=CLEAR_SOLVER)
         assert np.allclose(lo, hi, atol=1e-4)
 
 
 def test_classification():
-    case = toy.build_case("derate")
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR_SOLVER)
-    lo, hi = robust_bounds(SupportProblem(case.dam_model, dam.direction), solver=CLEAR_SOLVER)
+    dam_model, _ = toy.MODELS["derate"]
+    dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
+    lo, hi = robust_bounds(SupportProblem(dam_model, dam.direction), solver=CLEAR_SOLVER)
     classes = classify(lo, hi)
-    # pattern (a): exactly the base:SL upper row binds, nothing degenerate
+    # scenario (a): exactly the base:SL upper row binds, nothing degenerate
     assert classes.count("binding") == 1
     assert "degenerate" not in classes
 
 
 def test_discrepancy_signs():
     # extra_ftr: FTR enforces an extra contingency -> tighter -> D_minus
-    extra = toy.build_case("extra_ftr")
-    d = discrepancy(extra.dam_model, extra.ftr_model)
+    dam_model, ftr_model = toy.MODELS["extra_ftr"]
+    d = discrepancy(dam_model, ftr_model)
     assert len(d["D_minus"]) > 0 and len(d["D_plus"]) == 0
 
     # dam_outage: DAM enforces an extra contingency -> FTR looser -> D_plus
-    outage = toy.build_case("dam_outage")
-    d = discrepancy(outage.dam_model, outage.ftr_model)
+    dam_model, ftr_model = toy.MODELS["dam_outage"]
+    d = discrepancy(dam_model, ftr_model)
     assert len(d["D_plus"]) > 0 and len(d["D_minus"]) == 0

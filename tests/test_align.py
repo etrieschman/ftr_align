@@ -10,12 +10,11 @@ from ftr_align.cases import toy
 
 
 def _model(net, keys, limits):
-    limits = np.asarray(limits, dtype=float)
-    return NetworkModel.build(net, [Contingency(k, limits.copy(), limits.copy()) for k in keys])
+    return NetworkModel.build(net, [Contingency(k, limits) for k in keys])
 
 
 def test_independent_models_have_distinct_geometries():
-    net = toy.toy_network()
+    net = toy.NETWORK
     dam = _model(net, [None], toy.BASE_LIMITS)            # base only
     ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)    # base + SL outage
     assert dam.n_rows != ftr.n_rows
@@ -24,7 +23,7 @@ def test_independent_models_have_distinct_geometries():
 
 
 def test_align_to_common_index():
-    net = toy.toy_network()
+    net = toy.NETWORK
     dam = _model(net, [None], toy.BASE_LIMITS)
     ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)
 
@@ -41,7 +40,7 @@ def test_align_to_common_index():
 
 
 def test_embed_vector_matches_by_identity():
-    net = toy.toy_network()
+    net = toy.NETWORK
     dam = _model(net, [None], toy.BASE_LIMITS)
     ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)
 

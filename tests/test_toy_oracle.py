@@ -19,7 +19,7 @@ from ftr_align.cases import toy
 
 CLEAR_SOLVER = "CLARABEL"
 
-# (MS_DAM, Delta, eta) per (difference, pattern) -- PowerUp Table II
+# (MS_DAM, Delta, eta) per (model variation, scenario) -- PowerUp Table II
 TABLE_II = {
     ("derate", "(a)"): (32625, -8156, 0.75),
     ("derate", "(b)"): (5438, -1359, 0.75),
@@ -35,13 +35,13 @@ TABLE_II = {
 
 @pytest.mark.parametrize("key", list(TABLE_II))
 def test_table_ii(key):
-    difference, pattern = key
+    variation, scenario = key
     ms_exp, delta_exp, eta_exp = TABLE_II[key]
 
-    case = toy.build_case(difference)
-    dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    h_g = SupportProblem(case.ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    dam_model, ftr_model = toy.MODELS[variation]
+    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    h_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
 
     assert h_f.value == pytest.approx(ms_exp, abs=2)
     assert gap(h_g, h_f) == pytest.approx(delta_exp, abs=2)
@@ -51,20 +51,20 @@ def test_table_ii(key):
 @pytest.mark.parametrize("key", list(TABLE_II))
 def test_merch_surplus_equals_support_value(key):
     """Prop. 1: realized DAM merchandising surplus == h(f; y*)."""
-    difference, pattern = key
-    case = toy.build_case(difference)
-    dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(case.dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    variation, scenario = key
+    dam_model, _ = toy.MODELS[variation]
+    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
     assert dam.merch_surp == pytest.approx(h_f.value, abs=1.0)
 
 
 @pytest.mark.parametrize("key", list(TABLE_II))
 def test_strong_duality(key):
     """Primal support value == dual support value (Prop. 2)."""
-    difference, pattern = key
-    case = toy.build_case(difference)
-    dam = clear_dam(case.dam_model, case.instances[pattern], solver=CLEAR_SOLVER)
-    prob = SupportProblem(case.ftr_model, dam.direction)
+    variation, scenario = key
+    dam_model, ftr_model = toy.MODELS[variation]
+    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    prob = SupportProblem(ftr_model, dam.direction)
     sol = prob.solve(solver=CLEAR_SOLVER, want_primal=True)
     primal_value = float(sol.q @ prob.data.direction)
     assert primal_value == pytest.approx(sol.value, abs=1.0)

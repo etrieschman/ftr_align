@@ -10,7 +10,7 @@ rewriting per network.
 
 - **One network solve is the primitive**, not a DAM-vs-FTR pair. A `NetworkModel`
   owns its geometry: a `PhysicalNetwork` + a tuple of `Contingency` (each carrying
-  the line ratings enforced under it). `NetworkModel.build(net, contingencies)`
+  the line limits enforced under it). `NetworkModel.build(net, contingencies)`
   assembles `A = [K; −K]` and the stacked limit vector `b`. There is **no separate
   `StackedSystem`** — it was folded into `NetworkModel`.
 - **Support is parametrized by a node-space direction `d ∈ Rⁿ`**, not a row-space
@@ -24,7 +24,7 @@ rewriting per network.
   cross-model comparison** (lining up `μ_f`/`μ_g`, `D±`, joint blocks) — not
   preprocessing before a solve. `embed(values, source, target)` matches rows by
   `(contingency, element, side)`; `align(*models)` rebuilds onto a union
-  contingency set (unenforced contingencies added with `+inf` ratings). Valid
+  contingency set (unenforced contingencies added with `+inf` limits). Valid
   only under **Assumption 1 (common PTDFs)**; ERCOT's different-PTDF case is
   flagged, separate, not yet handled.
 - `b` and per-row vectors (`μ`) are **co-indexed full-length vectors** over the
@@ -59,8 +59,9 @@ tolerance (`CLASS_TOL`) must exceed the face-construction leak (`FACE_TOL`).
 
 ```
 ftr_align/
-  network.py    PTDF, PhysicalNetwork, Contingency (key + ratings),
-                NetworkModel (owns A & b), align, embed
+  network.py    PTDF, PhysicalNetwork, Contingency (key + limits; pass one
+                `upper` for symmetric), NetworkModel (owns A & b), align, embed,
+                contingency_label/element_label
   solve.py      assembly fns (dual_feasible/support_objective/network_constraints),
                 SupportData, SupportProblem, solve_support_cvxpy, SupportSolution,
                 DamInstance, DamResult, clear_dam (returns y* and direction)
@@ -68,7 +69,12 @@ ftr_align/
                 trade_space (D=ker C), connected_blocks (matroid components via
                 QR fundamental circuits), attribution_blocks, discrepancy
   metrics.py    gap(), ratio(), alignment_summary (Table II), dual_summary (Table III)
-  cases/toy.py  3-node oracle + build_redundant_case (double-circuit variant)
+  cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,
+                bid matrices) + the paper's cases as constants: SCENARIOS (label
+                -> DamInstance, via dam_instance(q_dem, max_gen)), MODELS (label
+                -> (dam, ftr) pair, built from Contingency lists), REDUNDANT_MODEL
+                (double-circuit variant).  No builder fn -- models are assembled
+                inline with NetworkModel.build.
 tests/          oracle tests: Tables II & III, strong duality, blocks, align
 ```
 Library is importable only; analysis run-scripts go in a sibling `notebooks/`
@@ -80,7 +86,8 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 - Table II (`MS_DAM`, `Δ`, `η`) and Table III (`μ_f`, `μ_g`) reproduced exactly.
 - Robust `μ` bounds + binding/degenerate/slack classification.
 - Trade space `D(b;y) = ker C` + matroid-connectivity attribution blocks with
-  face-invariant block totals `W_{G_r}`. Validated on `build_redundant_case`
+  face-invariant block totals `W_{G_r}`. Validated on the redundant variant
+  (`models(..., net=REDUNDANT_NETWORK, limits=REDUNDANT_LIMITS)`):
   (parallel `SLa`/`SLb`, reactance 2 each → combined 1, limit 37.5 → combined 75:
   electrically identical to base toy but identical PTDF rows → size-2 block,
   trade `(1,−1)`).

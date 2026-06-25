@@ -26,13 +26,12 @@ CLEAR = "CLARABEL"
 
 
 def test_redundant_face_and_trade():
-    case = toy.build_redundant_case()
-    sys = case.dam_model
+    sys = toy.REDUNDANT_MODELS["derate"][0]
     # the two parallel circuits are electrically identical
     assert np.allclose(sys.A[sys.rows_upper(None)[toy.SL]], sys.A[sys.rows_upper(None)[1]])
 
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.direction)
+    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
+    prob = SupportProblem(sys, dam.direction)
     # value still matches the oracle (electrically the base toy)
     assert prob.solve(solver=CLEAR).value == pytest.approx(32625, abs=2)
 
@@ -54,9 +53,9 @@ def test_redundant_face_and_trade():
 
 
 def test_redundant_single_block():
-    case = toy.build_redundant_case()
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    blocks = attribution_blocks(SupportProblem(case.dam_model, dam.direction), solver=CLEAR)
+    sys = toy.REDUNDANT_MODELS["derate"][0]
+    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
+    blocks = attribution_blocks(SupportProblem(sys, dam.direction), solver=CLEAR)
     assert blocks.height == 1
     assert blocks["size"][0] == 2
     assert blocks["W"][0] == pytest.approx(32625, abs=2)
@@ -65,13 +64,13 @@ def test_redundant_single_block():
 def test_block_total_is_face_invariant():
     """W_{G_r} is the same for any optimal certificate, even though individual
     multipliers differ (CLARABEL spreads weight, HiGHS puts it on one twin)."""
-    case = toy.build_redundant_case()
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.direction)
+    sys = toy.REDUNDANT_MODELS["derate"][0]
+    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
+    prob = SupportProblem(sys, dam.direction)
 
     mu_clarabel = prob.solve(solver="CLARABEL").mu
     mu_highs = prob.solve(solver="HIGHS").mu
-    sl = case.dam_model.rows_upper(None)[:2]
+    sl = sys.rows_upper(None)[:2]
     # the split genuinely differs between solvers...
     assert not np.allclose(mu_clarabel[sl], mu_highs[sl], atol=1.0)
 
@@ -84,9 +83,9 @@ def test_block_total_is_face_invariant():
 def test_unique_dual_gives_singletons():
     """When the dual is unique (standard toy), there are no trades and every
     binding constraint is its own block."""
-    case = toy.build_case("derate")
-    dam = clear_dam(case.dam_model, case.instances["(a)"], solver=CLEAR)
-    prob = SupportProblem(case.dam_model, dam.direction)
+    dam_model, _ = toy.MODELS["derate"]
+    dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR)
+    prob = SupportProblem(dam_model, dam.direction)
 
     _, hi = robust_bounds(prob, solver=CLEAR)
     index = support_index(hi)

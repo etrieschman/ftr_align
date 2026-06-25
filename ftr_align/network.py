@@ -1,4 +1,4 @@
-"""Network geometry: PTDF, contingencies (each carrying its own line ratings),
+"""Network geometry: PTDF, contingencies (each carrying its own line limits),
 and the network model that assembles them into the stacked constraint system.
 
 Notation follows the FTR pitch memo:
@@ -10,7 +10,7 @@ Notation follows the FTR pitch memo:
   ``(contingency, element)`` in contingency order, then element.
 
 A ``NetworkModel`` owns its geometry: a network plus a list of contingencies,
-each of which carries the line ratings enforced *under that contingency*.  It
+each of which carries the line limits enforced *under that contingency*.  It
 derives ``A`` and the limit vector ``b``.  DAM and FTR are two such models,
 defined independently; comparison of their per-row duals needs :func:`embed` /
 :func:`align` to put them on a common row index (see those for the caveat that
@@ -19,13 +19,14 @@ this requires common PTDFs).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
 
-# A contingency key:  None -> base case;  int -> single-element outage;
-#                     tuple[int, ...] -> multi-element outage.
+# A contingency key identifies which elements are out:  None -> base case
+# (nothing out);  int -> one outaged element;  tuple[int, ...] -> several.
 ContingencyKey = int | tuple[int, ...] | None
 
 
@@ -63,25 +64,20 @@ class PhysicalNetwork:
     def n_elements(self) -> int:
         return self.inc.shape[1]
 
-    def ptdf(self, outage: ContingencyKey = None) -> np.ndarray:
-        """PTDF with the contingency's elements removed (incidence columns
-        zeroed, so outaged elements carry no flow)."""
+    def ptdf(self, key: ContingencyKey = None) -> np.ndarray:
+        """PTDF with the contingency's outaged elements removed (their incidence
+        columns zeroed, so they carry no flow).  ``key`` is a contingency key:
+        ``None`` (base), an ``int`` element, or a tuple of element indices."""
         inc = np.array(self.inc, dtype=float, copy=True)
-        out = _outage_elements(outage)
-        if out:
+        if key is not None:
+            out = [int(key)] if isinstance(key, (int, np.integer)) else list(key)
             inc[:, out] = 0.0
         return compute_ptdf(inc, self.x, self.slack_idx)
 
 
-def _outage_elements(key: ContingencyKey) -> list[int]:
-    if key is None:
-        return []
-    if isinstance(key, (int, np.integer)):
-        return [int(key)]
-    return list(key)
-
-
 def contingency_label(key: ContingencyKey, element_names=None) -> str:
+    """Display label for a contingency key (``"base"``, an element name, or the
+    raw key for multi-element contingencies)."""
     if key is None:
         return "base"
     if element_names is not None and isinstance(key, (int, np.integer)):
@@ -89,18 +85,30 @@ def contingency_label(key: ContingencyKey, element_names=None) -> str:
     return str(key)
 
 
+def element_label(element_names, i: int) -> str:
+    """Display label for element ``i`` -- its name if available, else its index."""
+    return str(element_names[i]) if element_names is not None else str(i)
+
+
 # ----------------------------------------------------------------------------
-# Contingency: an outage together with the ratings enforced under it
+# Contingency: a contingency key together with the limits enforced under it
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Contingency:
-    """An outage (``key``) and the line ratings enforced under it.  ``upper`` and
-    ``lower`` are per-element flow limits (set them equal for symmetric limits;
-    use ``+inf`` to leave an element unmonitored under this contingency)."""
+    """A contingency (its ``key``) and the per-element flow limits enforced under
+    it.  Pass a single ``upper`` for symmetric limits; give ``lower`` only when
+    it differs.  Use ``+inf`` to leave an element unmonitored under this
+    contingency."""
 
     key: ContingencyKey
     upper: np.ndarray  # (ell,)
-    lower: np.ndarray  # (ell,)
+    lower: np.ndarray | None = None  # (ell,); defaults to upper (symmetric)
+
+    def __post_init__(self) -> None:
+        upper = np.asarray(self.upper, dtype=float)
+        lower = upper if self.lower is None else np.asarray(self.lower, dtype=float)
+        object.__setattr__(self, "upper", upper)
+        object.__setattr__(self, "lower", lower)
 
 
 # ----------------------------------------------------------------------------
@@ -120,7 +128,7 @@ class NetworkModel:
 
     @classmethod
     def build(
-        cls, network: PhysicalNetwork, contingencies: list[Contingency]
+        cls, network: PhysicalNetwork, contingencies: Iterable[Contingency]
     ) -> NetworkModel:
         conts = tuple(contingencies)
         k = np.vstack([network.ptdf(c.key) for c in conts])
@@ -163,9 +171,7 @@ class NetworkModel:
         names = self.network.element_names
         conts = [contingency_label(c.key, names) for c in self.contingencies for _ in range(ell)]
         elems = [
-            str(names[i]) if names is not None else str(i)
-            for _ in self.contingencies
-            for i in range(ell)
+            element_label(names, i) for _ in self.contingencies for i in range(ell)
         ]
         return pl.DataFrame(
             {
@@ -203,7 +209,7 @@ def embed(
 def align(*models: NetworkModel) -> list[NetworkModel]:
     """Rebuild several models onto one common (union) contingency set so their
     rows line up entrywise.  Contingencies a model does not enforce are added
-    with ``+inf`` ratings (unmonitored).  Used for row-level attribution
+    with ``+inf`` limits (unmonitored).  Used for row-level attribution
     comparison; not required to compute support values or the gap."""
     network = models[0].network
     union: list[ContingencyKey] = []
@@ -217,7 +223,7 @@ def align(*models: NetworkModel) -> list[NetworkModel]:
     for model in models:
         by_key = {c.key: c for c in model.contingencies}
         conts = [
-            by_key.get(key, Contingency(key, np.full(ell, np.inf), np.full(ell, np.inf)))
+            by_key.get(key, Contingency(key, np.full(ell, np.inf)))
             for key in union
         ]
         out.append(NetworkModel.build(network, conts))

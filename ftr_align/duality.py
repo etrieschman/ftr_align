@@ -21,12 +21,13 @@ import numpy as np
 import polars as pl
 from scipy.linalg import null_space, qr
 
-from .network import NetworkModel, align, contingency_label
+from .network import NetworkModel, align, contingency_label, element_label
 from .solve import SupportProblem, dual_feasible, support_objective
 
 FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
 CLASS_TOL = 1e-4  # zero threshold for classification; must exceed FACE_TOL leak
 RANK_TOL = 1e-7  # numerical zero for rank / nullspace
+NET_DUAL_TOL = 0.5  # drop sub-dollar net duals from the reported table
 
 Classification = Literal["binding", "degenerate", "slack"]
 
@@ -90,11 +91,11 @@ def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
     for c in model.contingencies:
         net = mu[model.rows_upper(c.key)] - mu[model.rows_lower(c.key)]
         for e in range(model.ell):
-            if abs(net[e]) > 0.5:
+            if abs(net[e]) > NET_DUAL_TOL:
                 records.append(
                     {
                         "contingency": contingency_label(c.key, names),
-                        "element": str(names[e]) if names is not None else str(e),
+                        "element": element_label(names, e),
                         "mu": float(net[e]),
                     }
                 )
@@ -179,12 +180,10 @@ def attribution_blocks(
     records = []
     for r, cols in enumerate(blocks):
         rows = [int(index[c]) for c in cols]
-        members = [
-            f"{labels.row(i, named=True)['contingency']}:"
-            f"{labels.row(i, named=True)['element']}:"
-            f"{labels.row(i, named=True)['side']}"
-            for i in rows
-        ]
+        members = []
+        for i in rows:
+            row = labels.row(i, named=True)
+            members.append(f"{row['contingency']}:{row['element']}:{row['side']}")
         W = float(sum(b[i] * mu[i] for i in rows))
         records.append({"block": r, "members": members, "size": len(rows), "W": W})
     return pl.DataFrame(

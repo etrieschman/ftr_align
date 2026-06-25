@@ -177,7 +177,7 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
     upper, lower, K = {}, {}, {}
     for c in model.contingencies:
         if not np.isfinite(c.upper).any() and not np.isfinite(c.lower).any():
-            continue  # unmonitored contingency (e.g. inf ratings after align)
+            continue  # unmonitored contingency (e.g. inf limits after align)
         K[c.key] = net.ptdf(c.key)
         flow = K[c.key] @ q
         upper[c.key], lower[c.key] = flow <= c.upper, -flow <= c.lower
@@ -185,6 +185,12 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
 
     problem = cp.Problem(cp.Minimize(inst.p_gen @ q_gen), constraints)
     problem.solve(solver=solver)
+    if q.value is None:
+        raise ValueError(
+            f"DAM clearing did not solve (status={problem.status!r}): no feasible "
+            "dispatch for this model and instance -- e.g. contingencies that "
+            "cannot be satisfied simultaneously."
+        )
 
     q_value = np.asarray(q.value, dtype=float)
     y = np.zeros(model.n_rows)
