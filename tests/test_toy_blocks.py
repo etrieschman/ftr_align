@@ -10,12 +10,14 @@ block total.
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, clear_dam
+from ftr_align import SupportProblem, align, clear_dam
 from ftr_align.duality import (
     attribution_blocks,
     classify,
     connected_blocks,
+    marginal_repair,
     robust_bounds,
+    shapley_repair,
     support_index,
     trade_matrix,
     trade_space,
@@ -23,6 +25,37 @@ from ftr_align.duality import (
 from ftr_align.cases import toy
 
 CLEAR = "CLARABEL"
+
+
+def _gap(dam, ftr, scenario="(a)"):
+    """Δ = h(g) - h(f) and the DAM congestion direction, for a model pair."""
+    d = clear_dam(dam, toy.SCENARIOS[scenario], solver=CLEAR).direction
+    dam_u, ftr_u = align(dam, ftr)
+    delta = (SupportProblem(ftr_u, d).solve(solver=CLEAR).value
+             - SupportProblem(dam_u, d).solve(solver=CLEAR).value)
+    return delta, d
+
+
+def test_shapley_repair_sums_to_gap():
+    """Shapley block repairs are additive: they reconstruct Δ, even in the
+    mixed case where underfunding and hedging drivers coexist."""
+    for case in ("dam_outage", "mixed"):
+        dam, ftr = toy.MODELS[case]
+        delta, d = _gap(dam, ftr)
+        total = shapley_repair(dam, ftr, d, solver=CLEAR)["repair"].sum()
+        assert total == pytest.approx(delta, abs=2)
+
+
+def test_marginal_repair_additive_only_for_single_driver():
+    """With one driver, the marginal repair equals Δ; with both drivers present
+    the marginals are masked and do NOT sum to Δ (Shapley is needed)."""
+    dam, ftr = toy.MODELS["dam_outage"]            # single (underfunding) driver
+    delta, d = _gap(dam, ftr)
+    assert marginal_repair(dam, ftr, d, solver=CLEAR)["repair"].sum() == pytest.approx(delta, abs=2)
+
+    dam, ftr = toy.MODELS["mixed"]                 # both drivers -> masking
+    delta, d = _gap(dam, ftr)
+    assert abs(marginal_repair(dam, ftr, d, solver=CLEAR)["repair"].sum() - delta) > 1.0
 
 
 def test_redundant_face_and_trade():

@@ -14,7 +14,7 @@ therefore clear with an interior-point solver to fix the canonical certificate.
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, clear_dam, gap, ratio
+from ftr_align import SupportProblem, clear_dam
 from ftr_align.cases import toy
 
 CLEAR_SOLVER = "CLARABEL"
@@ -43,9 +43,11 @@ def test_table_ii(key):
     h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
     h_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
 
+    delta = h_g.value - h_f.value
+    eta = h_g.value / h_f.value if h_f.value else 0.0
     assert h_f.value == pytest.approx(ms_exp, abs=2)
-    assert gap(h_g, h_f) == pytest.approx(delta_exp, abs=2)
-    assert (ratio(h_g, h_f) or 0.0) == pytest.approx(eta_exp, abs=0.01)
+    assert delta == pytest.approx(delta_exp, abs=2)
+    assert eta == pytest.approx(eta_exp, abs=0.01)
 
 
 @pytest.mark.parametrize("key", list(TABLE_II))

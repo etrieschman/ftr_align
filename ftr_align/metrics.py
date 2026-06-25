@@ -18,16 +18,6 @@ from .solve import SupportSolution
 EPS = 1e-9
 
 
-def gap(sol_g: SupportSolution, sol_f: SupportSolution) -> float:
-    """Alignment gap ``Delta = h(g) - h(f)`` (>0 underfunding, <0 hedging ineff.)."""
-    return sol_g.value - sol_f.value
-
-
-def ratio(sol_g: SupportSolution, sol_f: SupportSolution) -> float | None:
-    """Alignment ratio ``eta = h(g) / h(f)``; ``None`` if ``h(f) == 0``."""
-    return None if abs(sol_f.value) < EPS else sol_g.value / sol_f.value
-
-
 def alignment_summary(
     runs: Iterable[tuple[dict, SupportSolution, SupportSolution]],
 ) -> pl.DataFrame:
@@ -39,8 +29,8 @@ def alignment_summary(
         {
             **labels,
             "MS_DAM": sol_f.value,
-            "Delta": gap(sol_g, sol_f),
-            "eta": ratio(sol_g, sol_f),
+            "Delta": sol_g.value - sol_f.value,
+            "eta": None if abs(sol_f.value) < EPS else sol_g.value / sol_f.value,
         }
         for labels, sol_f, sol_g in runs
     ]

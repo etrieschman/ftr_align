@@ -14,6 +14,9 @@ face-invariant totals ``W_{G_r}``.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from itertools import combinations
+from math import factorial
 from typing import Literal
 
 import cvxpy as cp
@@ -185,11 +188,18 @@ def attribution_blocks(
             row = labels.row(i, named=True)
             members.append(f"{row['contingency']}:{row['element']}:{row['side']}")
         W = float(sum(b[i] * mu[i] for i in rows))
-        records.append({"block": r, "members": members, "size": len(rows), "W": W})
+        records.append(
+            {"block": r, "members": members, "rows": rows, "size": len(rows), "W": W}
+        )
     return pl.DataFrame(
         records,
-        schema={"block": pl.Int64, "members": pl.List(pl.Utf8),
-                "size": pl.Int64, "W": pl.Float64},
+        schema={
+            "block": pl.Int64,
+            "members": pl.List(pl.Utf8),
+            "rows": pl.List(pl.Int64),
+            "size": pl.Int64,
+            "W": pl.Float64,
+        },
     )
 
 
@@ -204,3 +214,102 @@ def discrepancy(dam: NetworkModel, ftr: NetworkModel) -> dict[str, np.ndarray]:
     dam_u, ftr_u = align(dam, ftr)
     f, g = dam_u.b, ftr_u.b
     return {"D_plus": np.where(g > f)[0], "D_minus": np.where(g < f)[0]}
+
+
+_REPAIR_SCHEMA = {
+    "driver": pl.Utf8,
+    "members": pl.List(pl.Utf8),
+    "rows": pl.List(pl.Int64),
+    "repair_rows": pl.List(pl.Int64),
+    "repair": pl.Float64,
+}
+
+
+def marginal_repair(
+    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver=None
+) -> pl.DataFrame:
+    """Standalone block-repair counterfactual (pitch sec. 3.2): for each gap
+    block, the change in ``h(g) - h(f)`` from repairing **only** that block's
+    differing rows (FTR -> DAM), measured from the original FTR.
+
+    Diagnostic, **not additive**: when both underfunding and hedging drivers are
+    present they interact (one block can mask another), so the marginal repairs
+    do not sum to the gap.  Use :func:`shapley_repair` for an additive split."""
+    ftr_u, f, g, blocks = _repair_blocks(dam, ftr, direction, solver)
+    h_g = SupportProblem(ftr_u, direction).solve(solver=solver).value
+
+    def reduction(rows: list[int]) -> float:
+        repaired = replace(ftr_u, b=_with(g, rows, f))
+        return h_g - SupportProblem(repaired, direction).solve(solver=solver).value
+
+    records = [{**blk, "repair": reduction(blk["repair_rows"])} for blk in blocks]
+    return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
+
+
+def shapley_repair(
+    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver=None
+) -> pl.DataFrame:
+    """Shapley attribution of the gap ``Delta = h(g) - h(f)`` across gap blocks:
+    each block's repair averaged over all orders of repairing the others.
+
+    Unlike :func:`marginal_repair` these are **additive** -- they sum to
+    ``Delta`` -- and credit each block for the effect it has once masking blocks
+    are already repaired.  Costs ``2**(#blocks)`` support solves (fine at toy /
+    block-sparse scale; sample orderings for large block sets)."""
+    ftr_u, f, g, blocks = _repair_blocks(dam, ftr, direction, solver)
+    h_g = SupportProblem(ftr_u, direction).solve(solver=solver).value
+    n = len(blocks)
+
+    cache: dict[frozenset, float] = {}
+
+    def reduction(subset: frozenset) -> float:
+        if not subset:
+            return 0.0
+        if subset not in cache:
+            rows = [r for i in subset for r in blocks[i]["repair_rows"]]
+            repaired = replace(ftr_u, b=_with(g, rows, f))
+            cache[subset] = h_g - SupportProblem(repaired, direction).solve(solver=solver).value
+        return cache[subset]
+
+    phi = [0.0] * n
+    for i in range(n):
+        others = [j for j in range(n) if j != i]
+        for k in range(len(others) + 1):
+            weight = factorial(k) * factorial(n - k - 1) / factorial(n)
+            for subset in combinations(others, k):
+                phi[i] += weight * (
+                    reduction(frozenset(subset + (i,))) - reduction(frozenset(subset))
+                )
+
+    records = [{**blk, "repair": phi[i]} for i, blk in enumerate(blocks)]
+    return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
+
+
+def _repair_blocks(
+    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver
+) -> tuple[NetworkModel, np.ndarray, np.ndarray, list[dict]]:
+    """Aligned ``ftr_u`` (plus its limits ``g`` and the DAM limits ``f``) and the
+    gap's repair blocks across both drivers.  Each block is an attribution block
+    of the relevant support whose differing rows (``repair_rows``) move the FTR
+    model toward the DAM model: ``underfunding`` blocks come from the DAM support
+    (rows where ``g > f``), ``hedging`` blocks from the FTR support (``g < f``).
+    Blocks with no differing rows are dropped."""
+    dam_u, ftr_u = align(dam, ftr)
+    f, g = dam_u.b, ftr_u.b
+    blocks = []
+    for driver, model, differs in (("underfunding", dam_u, g > f),
+                                   ("hedging", ftr_u, g < f)):
+        bl = attribution_blocks(SupportProblem(model, direction), solver=solver)
+        for blk in bl.rows(named=True):
+            repair_rows = [r for r in blk["rows"] if differs[r]]
+            if repair_rows:
+                blocks.append({"driver": driver, "members": blk["members"],
+                               "rows": blk["rows"], "repair_rows": repair_rows})
+    return ftr_u, f, g, blocks
+
+
+def _with(b: np.ndarray, rows: list[int], source: np.ndarray) -> np.ndarray:
+    """Copy of ``b`` with ``rows`` overwritten by ``source`` (the DAM limits)."""
+    out = b.copy()
+    out[rows] = source[rows]
+    return out

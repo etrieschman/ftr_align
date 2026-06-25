@@ -17,7 +17,7 @@ from .solve import (
     clear_dam,
     solve_support_cvxpy,
 )
-from .metrics import alignment_summary, dual_summary, gap, ratio
+from .metrics import alignment_summary, dual_summary
 
 __all__ = [
     "Contingency",
@@ -35,6 +35,4 @@ __all__ = [
     "solve_support_cvxpy",
     "alignment_summary",
     "dual_summary",
-    "gap",
-    "ratio",
 ]

@@ -92,6 +92,10 @@ MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
         NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
         NetworkModel.build(NETWORK, [_BASE]),
     ),
+    "mixed": (
+        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
+        NetworkModel.build(NETWORK, [Contingency(None, 0.75 * BASE_LIMITS)]),
+    ),
 }
 
 _REDUNDANT_BASE = Contingency(None, REDUNDANT_LIMITS)
@@ -114,5 +118,14 @@ REDUNDANT_MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
             REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
         ),
         NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
+    ),
+    "mixed": (
+        NetworkModel.build(
+            REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
+        ),
+        NetworkModel.build(
+            REDUNDANT_NETWORK,
+            [Contingency(None, 0.75 * REDUNDANT_LIMITS)],
+        ),
     ),
 }
