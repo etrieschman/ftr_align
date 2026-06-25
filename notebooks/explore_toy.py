@@ -3,6 +3,14 @@ import numpy as np
 import polars as pl
 
 from ftr_align import SupportProblem, clear_dam, dual_summary, gap, ratio
+from ftr_align.duality import (
+    attribution_blocks,
+    classify,
+    robust_bounds,
+    support_index,
+    trade_matrix,
+    trade_space,
+)
 from ftr_align.cases import toy
 
 CLEAR = "CLARABEL"  # interior-point → analytic-center certificate (paper numbers)
@@ -39,7 +47,7 @@ print(f"η  = h(g)/h(f) = {ratio(h_g, h_f):.3f}")
 # %%
 # Table I
 rows = []
-for vname, (dam_model, ftr_model) in toy.REDUNDANT_MODELS.items():
+for vname, (dam_model, ftr_model) in toy.MODELS.items():
     for sname, scenario in toy.SCENARIOS.items():
         dam = clear_dam(dam_model, scenario, solver=CLEAR)
         sol_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR)
@@ -72,35 +80,23 @@ for vname, (dam_model, ftr_model) in toy.MODELS.items():
                 labels={"variation": vname, "scenario": sname},
             )
         )
-pl.concat(blocks).melt(
-    id_vars=["variation", "scenario", "contingency", "element"], value_name="mu"
-).pivot(
-    index=["variation", "scenario", "variable"],
-    columns=["contingency", "element"],
-    values="mu",
-).sort(by=["variation", "scenario", "variable"])
-
-
-# %% [markdown]
-# ## Robust duals & attribution blocks (redundant variant)
-#
-# The double-circuit network (parallel `SLa`/`SLb`, identical PTDF rows) is the
-# smallest instance with a non-singleton optimal dual face: `μ` trades between
-# the twins.
-
-# %%
-from ftr_align.duality import (
-    attribution_blocks,
-    classify,
-    robust_bounds,
-    support_index,
-    trade_matrix,
-    trade_space,
+(
+    pl.concat(blocks)
+    .melt(id_vars=["variation", "scenario", "contingency", "element"], value_name="mu")
+    .pivot(
+        index=["variation", "scenario", "variable"],
+        columns=["contingency", "element"],
+        values="mu",
+    )
+    .sort(by=["variation", "scenario", "variable"])
 )
 
-sys = toy.REDUNDANT_MODELS["derate"][0]
-dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
-prob = SupportProblem(sys, dam.direction)
+
+# %%
+# Robust duals & attribution blocks (redundant variant)
+dam_model = toy.REDUNDANT_MODELS["dam_outage"][0]
+dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR)
+prob = SupportProblem(dam_model, dam.direction)
 print("support value:", round(prob.solve(solver=CLEAR).value, 1))
 
 lo, hi = robust_bounds(prob, solver=CLEAR)
@@ -111,6 +107,6 @@ print("classes      :", [klass[i] for i in index])
 
 C = trade_matrix(prob, index)
 D = trade_space(C)
-print("trade space dim:", D.shape[1], " weight shift:", D[:, 0])
+print("trade space dim:", D.shape[1])
 
 attribution_blocks(prob, solver=CLEAR)
