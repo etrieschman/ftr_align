@@ -7,6 +7,7 @@ from .network import (
     align,
     compute_ptdf,
     embed,
+    is_connected,
 )
 from .solve import (
     DamInstance,
@@ -26,6 +27,7 @@ __all__ = [
     "align",
     "compute_ptdf",
     "embed",
+    "is_connected",
     "DamInstance",
     "DamResult",
     "SupportData",

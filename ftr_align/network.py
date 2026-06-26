@@ -33,14 +33,67 @@ ContingencyKey = int | tuple[int, ...] | None
 # ----------------------------------------------------------------------------
 # PTDF and physical topology
 # ----------------------------------------------------------------------------
-def compute_ptdf(inc: np.ndarray, x: np.ndarray, slack_idx: int) -> np.ndarray:
+def is_connected(inc: np.ndarray, key: ContingencyKey = None) -> bool:
+    """Whether the network graph is connected once ``key``'s elements are removed.
+
+    Edges are incidence columns with two nonzero endpoints; a union-find over them
+    is connected iff every node lands in one component.  Equivalently, the DC
+    bus-susceptance matrix ``inc diag(b) inc^T`` is a graph Laplacian whose
+    rank is ``n - (#components)``, so dropping the slack row/col leaves an
+    invertible ``(n-1)x(n-1)`` block exactly when this returns ``True``.  Outaging
+    a *bridge* (``is_connected`` ``False``) would island the network and make the
+    PTDF inverse singular -- such N-1 outages are skipped, not solved.
+    """
+    inc = np.asarray(inc, dtype=float)
+    n, ell = inc.shape
+    if key is not None:
+        out = [int(key)] if isinstance(key, (int, np.integer)) else list(key)
+        inc = inc.copy()
+        inc[:, out] = 0.0
+
+    parent = list(range(n))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for j in range(ell):
+        nz = np.nonzero(inc[:, j])[0]
+        for k in nz[1:]:
+            ra, rk = find(int(nz[0])), find(int(k))
+            if ra != rk:
+                parent[ra] = rk
+
+    return len({find(i) for i in range(n)}) == 1
+
+
+def compute_ptdf(
+    inc: np.ndarray, x: np.ndarray, slack_idx: int, tap: np.ndarray | None = None
+) -> np.ndarray:
     """DC PTDF ``K`` (``(ell, n)``) for incidence ``inc`` (``(n, ell)``, entries
-    in ``{-1, 0, +1}``), reactances ``x`` (``(ell,)``), and a slack bus."""
+    in ``{-1, 0, +1}``), reactances ``x`` (``(ell,)``), and a slack bus.
+
+    ``tap`` is an optional per-element off-nominal magnitude ratio (default ones).
+    A transformer with ratio ``t`` scales the branch susceptance, ``b_eff =
+    (1/x)/t`` (the DC flow is ``(theta_i - theta_j)/(x t)``), so it enters as
+    ``y_line = diag(1/(x t))``.  Phase-shift taps are a separate additive flow
+    offset, not a PTDF change, and are absent from the data we load.
+    """
     inc = np.asarray(inc, dtype=float)
     x = np.asarray(x, dtype=float)
     n = inc.shape[0]
+    tap = np.ones(inc.shape[1]) if tap is None else np.asarray(tap, dtype=float)
 
-    y_line = np.diag(1.0 / x)
+    if not is_connected(inc):
+        raise ValueError(
+            "network is disconnected (islanded): the reduced bus-susceptance "
+            "matrix is singular.  An N-1 outage of a bridge element causes this; "
+            "such outages should be filtered out with is_connected before solving."
+        )
+
+    y_line = np.diag(1.0 / (x * tap))
     y_bus = inc @ y_line @ inc.T
     keep = np.delete(np.eye(n), slack_idx, axis=0)  # drop slack row
     return y_line @ inc.T @ keep.T @ np.linalg.inv(keep @ y_bus @ keep.T) @ keep
@@ -55,6 +108,7 @@ class PhysicalNetwork:
     slack_idx: int = -1
     node_names: np.ndarray | None = None
     element_names: np.ndarray | None = None
+    tap: np.ndarray | None = None  # (ell,) off-nominal magnitude ratios; None -> ones
 
     @property
     def n_nodes(self) -> int:
@@ -72,7 +126,7 @@ class PhysicalNetwork:
         if key is not None:
             out = [int(key)] if isinstance(key, (int, np.integer)) else list(key)
             inc[:, out] = 0.0
-        return compute_ptdf(inc, self.x, self.slack_idx)
+        return compute_ptdf(inc, self.x, self.slack_idx, self.tap)
 
 
 def contingency_label(key: ContingencyKey, element_names=None) -> str:
@@ -134,8 +188,10 @@ class NetworkModel:
         k = np.vstack([network.ptdf(c.key) for c in conts])
         A = np.vstack([k, -k])
         b = np.concatenate(
-            [np.concatenate([c.upper for c in conts]),
-             np.concatenate([c.lower for c in conts])]
+            [
+                np.concatenate([c.upper for c in conts]),
+                np.concatenate([c.lower for c in conts]),
+            ]
         )
         return cls(network=network, contingencies=conts, A=A, b=b)
 
@@ -166,16 +222,22 @@ class NetworkModel:
         return np.arange(half + s, half + s + self.ell)
 
     def labels(self) -> pl.DataFrame:
-        """Per-row identity (contingency, element, side) -- for output tables."""
+        """Per-constraint identity -- ``constraint`` (the row index into ``A``/
+        ``b``/``mu``) with its ``(contingency, element, side)`` -- for output
+        tables.  Each row of ``A`` is one constraint ``A[i] q <= b[i]``."""
         ell = self.ell
         names = self.network.element_names
-        conts = [contingency_label(c.key, names) for c in self.contingencies for _ in range(ell)]
+        conts = [
+            contingency_label(c.key, names)
+            for c in self.contingencies
+            for _ in range(ell)
+        ]
         elems = [
             element_label(names, i) for _ in self.contingencies for i in range(ell)
         ]
         return pl.DataFrame(
             {
-                "row": np.arange(self.n_rows),
+                "constraint": np.arange(self.n_rows),
                 "contingency": conts * 2,
                 "element": elems * 2,
                 "side": ["upper"] * (self.n_rows // 2) + ["lower"] * (self.n_rows // 2),
@@ -223,8 +285,7 @@ def align(*models: NetworkModel) -> list[NetworkModel]:
     for model in models:
         by_key = {c.key: c for c in model.contingencies}
         conts = [
-            by_key.get(key, Contingency(key, np.full(ell, np.inf)))
-            for key in union
+            by_key.get(key, Contingency(key, np.full(ell, np.inf))) for key in union
         ]
         out.append(NetworkModel.build(network, conts))
     return out

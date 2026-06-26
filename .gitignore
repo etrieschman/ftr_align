@@ -18,3 +18,6 @@ env/
 
 # OS
 .DS_Store
+
+# Fetched datasets (pinned + reproducible via cases/rts_gmlc.py MANIFEST)
+ftr_align/cases/data/

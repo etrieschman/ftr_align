@@ -59,8 +59,10 @@ tolerance (`CLASS_TOL`) must exceed the face-construction leak (`FACE_TOL`).
 
 ```
 ftr_align/
-  network.py    PTDF, PhysicalNetwork, Contingency (key + limits; pass one
-                `upper` for symmetric), NetworkModel (owns A & b), align, embed,
+  network.py    PTDF (compute_ptdf takes optional per-element `tap`),
+                is_connected (bridge/islanding guard), PhysicalNetwork (optional
+                `tap`), Contingency (key + limits; pass one `upper` for
+                symmetric), NetworkModel (owns A & b), align, embed,
                 contingency_label/element_label
   solve.py      assembly fns (dual_feasible/support_objective/network_constraints),
                 SupportData, SupportProblem, solve_support_cvxpy, SupportSolution,
@@ -75,13 +77,21 @@ ftr_align/
                 -> (dam, ftr) pair, built from Contingency lists), REDUNDANT_MODEL
                 (double-circuit variant).  No builder fn -- models are assembled
                 inline with NetworkModel.build.
-tests/          oracle tests: Tables II & III, strong duality, blocks, align
+  cases/rts_gmlc.py  73-bus loader: SHA-pinned fetch (RTS_GMLC_REF + MANIFEST
+                checksums) of bus/branch/gen CSVs + day-ahead load/renewable
+                timeseries -> load_network (DC PTDF w/ magnitude taps),
+                n1_contingencies (Cont base, LTE post-contingency, bridges
+                skipped), dam_instance(interval) (PWL step bids from heat-rate
+                segments, interval-synced renewable caps, regional load split to
+                buses). Cache gitignored.
+tests/          oracle tests: Tables II & III, strong duality, blocks, align;
+                test_rts_gmlc (loader invariants + end-to-end, skips if offline)
 ```
 Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 (jupytext `# %%`). Planned: `scenarios.py` (`build_dam_instance` = inverse of
 `clear_dam`, a tested roundtrip), `analysis/` (alignment, viz_toy, viz_large).
 
-## Status (2026-06-24): slices 1–3 done, 46 tests pass
+## Status (2026-06-26): slices 1–3 + RTS-GMLC loader done, 59 tests pass
 
 - Table II (`MS_DAM`, `Δ`, `η`) and Table III (`μ_f`, `μ_g`) reproduced exactly.
 - Robust `μ` bounds + binding/degenerate/slack classification.
@@ -93,21 +103,35 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
   trade `(1,−1)`).
 
 ### Per-contingency / asymmetric / emergency-rating limits
-Already supported: `b` is a free per-row vector and `clear_dam` reads the upper
-and lower limit per contingency independently. Only a `from_limits(system,
-{contingency: (upper, lower)})` convenience constructor is deferred — it's the
-first small addition for RTS-GMLC.
+Supported: `b` is a free per-row vector and `clear_dam` reads the upper and lower
+limit per contingency independently. (`from_limits` was considered and dropped —
+`n1_contingencies` builds `Contingency` objects directly, so it was redundant.)
+
+### RTS-GMLC modeling choices (settled)
+- **DC PTDF with magnitude transformer taps**: `compute_ptdf` scales susceptance
+  `b_eff = 1/(x·tap)` (`Tr Ratio`, 0 ⇒ tap 1). RTS has no phase shifters, so this
+  is exact; shunts / line-charging `B` / `BaseKV` are reactive/voltage and do not
+  enter a MW-based DCOPF.
+- **Limits**: `Cont Rating` pre-contingency (base), `LTE Rating` post-contingency
+  (each N-1). The outaged element's own row → `+inf` (it carries no flow).
+- **Bids**: PWL step offers, one `M_gen` block-column per heat-rate segment
+  (`(HR_incr/1000)·FuelPrice + VOM`); `DamInstance` needed no change.
+- **Renewables**: PV/RTPV/Wind/Hydro caps from the same `interval` as load, one
+  zero-cost block each. **No UC**: single-period economic dispatch, `PMin` → 0.
+- **Islanding**: bridge outages skipped (would island ⇒ singular PTDF), matching
+  ISO practice of excluding radial outages from thermal flow constraints.
+- Data fully pinned: `RTS_GMLC_REF` commit + `MANIFEST` SHA256s ⇒ reproducible.
 
 ### Next
-1. **RTS-GMLC loader** in `cases/rts_gmlc.py` — hand-rolled parse of the
-   RTS-GMLC bus/branch/gen CSVs → `PhysicalNetwork` + N-1 `contingencies`, then
-   the same `build → align → clear_dam/SupportProblem` flow. Add `from_limits`.
+1. Multi-interval funding-gap `δ(T)` (Theorem 4: single solve on `Σ y*_t`). The
+   `dam_instance(interval)` API was built for the sweep.
    Scale note: dense `A` is fine at 73 buses × ~120 contingencies, but the
    per-row robust-bound LP loop in `duality.py` should restrict to `I(b;y)`
-   (and eventually warm-start) — not a rewrite.
-2. Multi-interval funding-gap `δ(T)` (Theorem 4: single solve on `Σ y*_t`).
-3. Misalignment attribution (`D±`, block-repair counterfactuals).
-4. Ex-ante design (custom bilinear / cutting-plane solver over a union of
+   (and eventually warm-start) — not a rewrite. Also still TODO: storage/batteries
+   (single-period `DamInstance` can't model charge/discharge/SOC; excluded in the
+   loader) and example DAM/FTR model pairs for RTS.
+2. Misalignment attribution (`D±`, block-repair counterfactuals).
+3. Ex-ante design (custom bilinear / cutting-plane solver over a union of
    polyhedra; reuses the assembly functions with `g`, `y` promoted to variables).
 
 ## Environment
