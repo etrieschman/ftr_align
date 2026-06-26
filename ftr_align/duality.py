@@ -219,8 +219,8 @@ def discrepancy(dam: NetworkModel, ftr: NetworkModel) -> dict[str, np.ndarray]:
 _REPAIR_SCHEMA = {
     "driver": pl.Utf8,
     "members": pl.List(pl.Utf8),
-    "rows": pl.List(pl.Int64),
-    "repair_rows": pl.List(pl.Int64),
+    "idxs": pl.List(pl.Int64),
+    "repair_idxs": pl.List(pl.Int64),
     "repair": pl.Float64,
 }
 
@@ -242,7 +242,7 @@ def marginal_repair(
         repaired = replace(ftr_u, b=_with(g, rows, f))
         return h_g - SupportProblem(repaired, direction).solve(solver=solver).value
 
-    records = [{**blk, "repair": reduction(blk["repair_rows"])} for blk in blocks]
+    records = [{**blk, "repair": reduction(blk["repair_idxs"])} for blk in blocks]
     return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
 
 
@@ -266,9 +266,11 @@ def shapley_repair(
         if not subset:
             return 0.0
         if subset not in cache:
-            rows = [r for i in subset for r in blocks[i]["repair_rows"]]
+            rows = [r for i in subset for r in blocks[i]["repair_idxs"]]
             repaired = replace(ftr_u, b=_with(g, rows, f))
-            cache[subset] = h_g - SupportProblem(repaired, direction).solve(solver=solver).value
+            cache[subset] = (
+                h_g - SupportProblem(repaired, direction).solve(solver=solver).value
+            )
         return cache[subset]
 
     phi = [0.0] * n
@@ -297,14 +299,22 @@ def _repair_blocks(
     dam_u, ftr_u = align(dam, ftr)
     f, g = dam_u.b, ftr_u.b
     blocks = []
-    for driver, model, differs in (("underfunding", dam_u, g > f),
-                                   ("hedging", ftr_u, g < f)):
+    for driver, model, differs in (
+        ("underfunding", dam_u, g > f),
+        ("hedging", ftr_u, g < f),
+    ):
         bl = attribution_blocks(SupportProblem(model, direction), solver=solver)
         for blk in bl.rows(named=True):
             repair_rows = [r for r in blk["rows"] if differs[r]]
             if repair_rows:
-                blocks.append({"driver": driver, "members": blk["members"],
-                               "rows": blk["rows"], "repair_rows": repair_rows})
+                blocks.append(
+                    {
+                        "driver": driver,
+                        "members": blk["members"],
+                        "idxs": blk["rows"],
+                        "repair_idxs": repair_rows,
+                    }
+                )
     return ftr_u, f, g, blocks
 
 

@@ -22,32 +22,31 @@ pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
 
 # %%
+# -------------------------------------
+# INSPECT NETWORK AND SINGLE SCENARIO
+# -------------------------------------
 net = toy.NETWORK
+print("~~~~~~ Toy network:")
 print("nodes   :", net.node_names.tolist())
 print("elements:", net.element_names.tolist())
 print("slack   :", net.node_names[net.slack_idx])
 print("limits  :", toy.BASE_LIMITS.tolist())
-print("\nPTDF (line x node):")
-print(net.ptdf())
+print(f"PTDF (line x node):\n{net.ptdf()}")
 
-# %%
 # Test one scenario
-dam_model, ftr_model = toy.REDUNDANT_MODELS["derate"]
-scenario = toy.SCENARIOS["(a)"]
-
+PATTERN, SCENARIO = "derate", "(a)"
+print(f"\n~~~~~~ Test scenario:")
+print(f"pattern={PATTERN}, scenario={SCENARIO}")
+dam_model, ftr_model = toy.REDUNDANT_MODELS[PATTERN]
+scenario = toy.SCENARIOS[SCENARIO]
 dam = clear_dam(dam_model, scenario, solver=CLEAR)
-print("DAM merchandising surplus:", round(dam.merch_surp, 1))
-print("node-space direction d   :", dam.direction)
-
 h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR)  # DAM
 h_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR)  # FTR
-
-print(f"\nMS_DAM = h(f) = {h_f.value:,.0f}")
-print(f"h(g)          = {h_g.value:,.0f}")
-print(
-    f"Δ  = h(g)-h(f) = {h_g.value - h_f.value:,.0f}   (>0 underfunding, <0 hedging ineff.)"
-)
-print(f"η  = h(g)/h(f) = {None if abs(h_f.value) < EPS else h_g.value / h_f.value:.3f}")
+print("DAM_MS =", round(dam.merch_surp, 1))
+print("d = A.T@y =", dam.direction)
+print(f"h(f) = MS_DAM = {h_f.value:,.0f}")
+print(f"h(g) = {h_g.value:,.0f}")
+print(f"Δ  = h(g)-h(f) = {h_g.value - h_f.value:,.0f}")
 
 # %%
 # Table I
@@ -70,65 +69,44 @@ pl.DataFrame(rows)
 
 # %%
 # Table II: dual attribution
-blocks = []
-for vname, (dam_model, ftr_model) in toy.MODELS.items():
-    for sname, scenario in toy.SCENARIOS.items():
-        dam = clear_dam(dam_model, scenario, solver=CLEAR)
-        sol_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR)
-        sol_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR)
-        blocks.append(
-            dual_summary(
-                dam_model,
-                sol_f,
-                ftr_model,
-                sol_g,
-                labels={"variation": vname, "scenario": sname},
+for model in [toy.MODELS, toy.REDUNDANT_MODELS]:
+    blocks = []
+    for vname, (dam_model, ftr_model) in model.items():
+        for sname, scenario in toy.SCENARIOS.items():
+            dam = clear_dam(dam_model, scenario, solver=CLEAR)
+            sol_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR)
+            sol_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR)
+            blocks.append(
+                dual_summary(
+                    dam_model,
+                    sol_f,
+                    ftr_model,
+                    sol_g,
+                    labels={"variation": vname, "scenario": sname},
+                )
             )
+    blocks_df = (
+        pl.concat(blocks)
+        .melt(
+            id_vars=["variation", "scenario", "contingency", "element"], value_name="mu"
         )
-(
-    pl.concat(blocks)
-    .melt(id_vars=["variation", "scenario", "contingency", "element"], value_name="mu")
-    .pivot(
-        index=["variation", "scenario", "variable"],
-        columns=["contingency", "element"],
-        values="mu",
+        .pivot(
+            index=["variation", "scenario", "variable"],
+            on=["contingency", "element"],
+            values="mu",
+        )
+        .sort(by=["variation", "scenario", "variable"])
     )
-    .sort(by=["variation", "scenario", "variable"])
-)
+    display(blocks_df)
 
 
 # %%
-# Table IIb: dual attribution redundant models
-blocks = []
-for vname, (dam_model, ftr_model) in toy.REDUNDANT_MODELS.items():
-    for sname, scenario in toy.SCENARIOS.items():
-        dam = clear_dam(dam_model, scenario, solver=CLEAR)
-        sol_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR)
-        sol_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR)
-        blocks.append(
-            dual_summary(
-                dam_model,
-                sol_f,
-                ftr_model,
-                sol_g,
-                labels={"variation": vname, "scenario": sname},
-            )
-        )
-(
-    pl.concat(blocks)
-    .melt(id_vars=["variation", "scenario", "contingency", "element"], value_name="mu")
-    .pivot(
-        index=["variation", "scenario", "variable"],
-        columns=["contingency", "element"],
-        values="mu",
-    )
-    .sort(by=["variation", "scenario", "variable"])
-)
-
-# %%
+PATTERN = "mixed"
+SCENARIO = "(a)"
+print(f"PATTERN={PATTERN}, SCENARIO={SCENARIO}\n")
 # Robust duals & attribution blocks (redundant variant)
-dam_model, ftr_model = toy.REDUNDANT_MODELS["mixed"]
-dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR)
+dam_model, ftr_model = toy.MODELS[PATTERN]
+dam = clear_dam(dam_model, toy.SCENARIOS[SCENARIO], solver=CLEAR)
 dam_prob = SupportProblem(dam_model, dam.direction)
 ftr_prob = SupportProblem(ftr_model, dam.direction)
 
@@ -138,6 +116,7 @@ index = support_index(hi)
 klass = classify(lo, hi)
 C = trade_matrix(dam_prob, index)
 D = trade_space(C)
+print("~~~~~~~~ DAM model")
 print("DAM support value:", round(dam_prob.solve(solver=CLEAR).value, 1))
 print("DAM support rows :", index.tolist())
 print("DAM classes      :", [klass[i] for i in index])
@@ -151,6 +130,7 @@ index = support_index(hi)
 klass = classify(lo, hi)
 C = trade_matrix(ftr_prob, index)
 D = trade_space(C)
+print("\n~~~~~~~~ FTR model")
 print("FTR support value:", round(ftr_prob.solve(solver=CLEAR).value, 1))
 print("FTR support rows :", index.tolist())
 print("FTR classes      :", [klass[i] for i in index])
@@ -158,18 +138,16 @@ print("FTR trade space dim:", D.shape[1])
 display(attribution_blocks(ftr_prob, solver=CLEAR))
 
 
-# %%
 # Repair: per-block attribution of the gap Δ = h(g) - h(f).  marginal_repair =
 # each block's standalone effect (not additive when drivers mask each other);
 # shapley_repair = order-averaged, additive (sums to Δ).
-dam_model, ftr_model = toy.REDUNDANT_MODELS[
-    "mixed"
-]  # both underfunding + hedging drivers
-d = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR).direction
+dam_model, ftr_model = toy.MODELS[PATTERN]  # both underfunding + hedging drivers
+d = clear_dam(dam_model, toy.SCENARIOS[SCENARIO], solver=CLEAR).direction
+print("\n~~~~~~~~ Repair of gap")
 (
     marginal_repair(dam_model, ftr_model, d, solver=CLEAR).join(
         shapley_repair(dam_model, ftr_model, d, solver=CLEAR),
-        on=["driver", "members", "rows", "repair_rows"],
+        on=["driver", "members", "idxs", "repair_idxs"],
         how="full",
         coalesce=True,
         suffix="_shapley",
