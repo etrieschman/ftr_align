@@ -130,13 +130,12 @@ display(ftr_attr)
 # shapley_repair = order-averaged, additive (sums to Δ).
 print("\n~~~~~~~~ Repair of gap")
 (
-    marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER)
-    # .join(
-    #     shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR),
-    #     on=["driver", "members", "idxs", "repair_idxs"],
-    #     how="full",
-    #     coalesce=True,
-    #     suffix="_shapley",
-    # )
+    marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER).join(
+        shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR),
+        on=["driver", "members", "idxs", "repair_idxs"],
+        how="full",
+        coalesce=True,
+        suffix="_shapley",
+    )
 )
 # %%
