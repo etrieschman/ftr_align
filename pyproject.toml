@@ -13,6 +13,7 @@ dependencies = [
     "scipy",
     "pydantic>=2.7",
     "highspy",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
