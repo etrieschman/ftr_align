@@ -13,9 +13,11 @@ The canonical form is the **dual**,
 
 so the multipliers ``mu`` (what attribution cares about) are variables.
 
-Solver seam: ``solve(solver=...)`` with a CVXPY solver name (or ``None``) runs
-the built-in cvxpy path; any other object is a custom solver, called as
-``solver.solve(problem) -> SupportSolution``.
+Solver seam: ``solve(solver=...)`` takes ``None | dict | custom solver``.
+``None`` or a ``dict`` runs the built-in cvxpy path -- the dict is splatted
+straight into ``cp.Problem.solve`` as its options (e.g.
+``{"solver": "CLARABEL", "verbose": True}``).  Anything else is a custom solver,
+called as ``solver.solve(problem) -> SupportSolution``.
 """
 
 from __future__ import annotations
@@ -88,15 +90,17 @@ class SupportProblem:
         )
 
     def solve(self, solver=None, want_primal: bool = False) -> SupportSolution:
-        if solver is None or isinstance(solver, str):
-            return solve_support_cvxpy(self, lp_solver=solver, want_primal=want_primal)
+        if solver is None or isinstance(solver, dict):
+            return solve_support_cvxpy(self, solver, want_primal=want_primal)
         return solver.solve(self)  # custom solver: returns a SupportSolution
 
 
 def solve_support_cvxpy(
-    problem: SupportProblem, lp_solver: str | None = None, want_primal: bool = False
+    problem: SupportProblem, opts: dict | None = None, want_primal: bool = False
 ) -> SupportSolution:
-    """Built-in dual support solve via cvxpy (the default backend)."""
+    """Built-in dual support solve via cvxpy.  ``opts`` is splatted into
+    ``cp.Problem.solve`` (e.g. ``{"solver": "CLARABEL", "verbose": True}``)."""
+    opts = opts or {}
     data = problem.data
     active = data.active
 
@@ -106,7 +110,7 @@ def solve_support_cvxpy(
     if (~active).any():
         constraints.append(mu[~active] == 0)
     objective = cp.Minimize(support_objective(data.b[active], mu[active]))
-    cp.Problem(objective, constraints).solve(solver=lp_solver)
+    cp.Problem(objective, constraints).solve(**opts)
 
     mu_value = np.asarray(mu.value, dtype=float)
     mu_value[~active] = 0.0
@@ -115,20 +119,19 @@ def solve_support_cvxpy(
         mu=mu_value,
         s=float(s.value),
         status="solved",
-        q=_solve_primal(problem, lp_solver) if want_primal else None,
+        q=_solve_primal(problem, opts) if want_primal else None,
         binding=mu_value > ZERO_TOL,
     )
 
 
-def _solve_primal(problem: SupportProblem, lp_solver: str | None = None) -> np.ndarray:
+def _solve_primal(problem: SupportProblem, opts: dict | None = None) -> np.ndarray:
     """Primal support: ``max d^T q  s.t.  A_active q <= b_active, 1^T q = 0``."""
+    opts = opts or {}
     data = problem.data
     active = data.active
     q = cp.Variable(data.A.shape[1], name="q")
     objective = cp.Maximize(data.direction @ q)
-    cp.Problem(objective, network_constraints(data.A[active], data.b[active], q)).solve(
-        solver=lp_solver
-    )
+    cp.Problem(objective, network_constraints(data.A[active], data.b[active], q)).solve(**opts)
     return np.asarray(q.value, dtype=float)
 
 
@@ -160,8 +163,9 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
     """Clear the DAM on ``model`` and return its shadow-price certificate ``y*``
     (over the model's rows) and the induced node-space ``direction = A^T y*``.
 
-    Note: under dual degeneracy ``y*`` is non-unique; an interior-point solver
-    (e.g. ``CLARABEL``) returns the analytic-center certificate.
+    ``solver`` is a dict of cvxpy options (or ``None``); under dual degeneracy
+    ``y*`` is non-unique and an interior-point solver
+    (``{"solver": "CLARABEL"}``) returns the analytic-center certificate.
     """
     net = model.network
     q_gen = cp.Variable(inst.M_gen.shape[1], name="q_gen")
@@ -184,7 +188,7 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
         constraints += [upper[c.key], lower[c.key]]
 
     problem = cp.Problem(cp.Minimize(inst.p_gen @ q_gen), constraints)
-    problem.solve(solver=solver)
+    problem.solve(**(solver or {}))
     if q.value is None:
         raise ValueError(
             f"DAM clearing did not solve (status={problem.status!r}): no feasible "

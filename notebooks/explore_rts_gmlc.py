@@ -2,6 +2,7 @@
 import numpy as np
 import polars as pl
 from tqdm import tqdm
+import plotly.express as px
 
 from ftr_align import SupportProblem, clear_dam, dual_summary
 from ftr_align import network
@@ -12,16 +13,19 @@ from ftr_align.duality import (
     robust_bounds,
     shapley_repair,
     support_index,
+    support_set,
     trade_matrix,
     trade_space,
 )
 from ftr_align.metrics import EPS
-from ftr_align.cases import rts_gmlc, toy
+from ftr_align.cases import rts_gmlc
+from tests.test_toy_blocks import CLEAR
 
-CLEAR = "CLARABEL"  # interior-point → analytic-center certificate (paper numbers)
+SOLVER = {"solver": "HiGHS"}
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
+rng = np.random.default_rng(42)
 
 
 # %%
@@ -42,22 +46,22 @@ model.labels().head()
 # -------------------------------------
 # Random networks
 # -------------------------------------
-dam_cont = [cont[i] for i in np.random.choice(len(cont), 24, replace=False)]
-ftr_cont = [cont[i] for i in np.random.choice(len(cont), 24, replace=False)]
+dam_cont = [cont[i] for i in rng.choice(len(cont), 50, replace=False)]
+ftr_cont = [cont[i] for i in rng.choice(len(cont), 50, replace=False)]
 dam_model = network.NetworkModel.build(network=net, contingencies=dam_cont)
 ftr_model = network.NetworkModel.build(network=net, contingencies=ftr_cont)
 
 interval_rows = []
 dual_rows = []
-interval_start = rts_gmlc.interval_index(8, 15, 1)
-interval_end = rts_gmlc.interval_index(8, 16, 1)
+interval_start = rts_gmlc.interval_index(8, 10, 15)
+interval_end = rts_gmlc.interval_index(8, 10, 21)
 intervals = np.arange(interval_start, interval_end, 1, dtype=int)
 for interval in tqdm(intervals):
     dam_sol = clear_dam(
-        dam_model, rts_gmlc.dam_instance(interval=interval, network=net), solver=CLEAR
+        dam_model, rts_gmlc.dam_instance(interval=interval, network=net), solver=SOLVER
     )
-    sol_f = SupportProblem(dam_model, dam_sol.direction).solve(solver=CLEAR)
-    sol_g = SupportProblem(ftr_model, dam_sol.direction).solve(solver=CLEAR)
+    sol_f = SupportProblem(dam_model, dam_sol.direction).solve(solver=SOLVER)
+    sol_g = SupportProblem(ftr_model, dam_sol.direction).solve(solver=SOLVER)
     interval_rows.append(
         {
             "interval": interval,
@@ -83,39 +87,42 @@ dual_df = pl.concat(dual_rows, how="vertical")
 # Inspect the worst-case interval
 # ---------------------------------
 # get worst-case interval and recompute problems
-max_int = intervals[interval_df["Delta"].arg_max()]
+worst_int = interval_df.sort("Delta", descending=True)["interval"][0]
+print("Worst interval:", interval_df.filter(pl.col("interval") == worst_int))
+worst_int_idx = intervals[intervals == worst_int][0]
 dam_sol = clear_dam(
-    dam_model, rts_gmlc.dam_instance(interval=max_int, network=net), solver=CLEAR
+    dam_model, rts_gmlc.dam_instance(interval=worst_int_idx, network=net), solver=SOLVER
 )
 dam_prob = SupportProblem(dam_model, dam_sol.direction)
 ftr_prob = SupportProblem(ftr_model, dam_sol.direction)
 
-# inspect DAM model
-lo, hi = robust_bounds(dam_prob, solver=CLEAR)
-index = support_index(hi)
-klass = classify(lo, hi)
+# inspect DAM model.  support_set gets I(b;d) from one CLARABEL solve (strict
+# complementarity) -- ~50-130x cheaper than the robust_bounds face-LP loop, which
+# we'd need only for lo/hi ranges (classify).  Pass index to skip it in attribution.
+dam_dual = dam_prob.solve(solver={"solver": "CLARABEL"})
+index = support_set(dam_prob)
 C = trade_matrix(dam_prob, index)
 D = trade_space(C)
 print("~~~~~~~~ DAM model")
-print("DAM support value:", round(dam_prob.solve(solver=CLEAR).value, 1))
+print("DAM support value:", round(dam_dual.value, 1))
 print("DAM support rows :", index.tolist())
-print("DAM classes      :", [klass[i] for i in index])
 print("DAM trade space dim:", D.shape[1])
-display(attribution_blocks(dam_prob, solver=CLEAR))
+dam_attr = attribution_blocks(dam_prob, mu=dam_dual.mu, index=index)
+display(dam_attr)
 
 
 # inspect FTR model
-lo, hi = robust_bounds(ftr_prob, solver=CLEAR)
-index = support_index(hi)
-klass = classify(lo, hi)
+ftr_dual = ftr_prob.solve(solver={"solver": "CLARABEL"})
+index = support_set(ftr_prob)
 C = trade_matrix(ftr_prob, index)
 D = trade_space(C)
 print("\n~~~~~~~~ FTR model")
-print("FTR support value:", round(ftr_prob.solve(solver=CLEAR).value, 1))
+print("FTR support value:", round(ftr_dual.value, 1))
 print("FTR support rows :", index.tolist())
-print("FTR classes      :", [klass[i] for i in index])
 print("FTR trade space dim:", D.shape[1])
-display(attribution_blocks(ftr_prob, solver=CLEAR))
+px.imshow(D, labels={"x": "trade space dim", "y": "support row"}).show()
+ftr_attr = attribution_blocks(ftr_prob, mu=ftr_dual.mu, index=index)
+display(ftr_attr)
 
 
 # Repair: per-block attribution of the gap Δ = h(g) - h(f).  marginal_repair =
@@ -123,12 +130,13 @@ display(attribution_blocks(ftr_prob, solver=CLEAR))
 # shapley_repair = order-averaged, additive (sums to Δ).
 print("\n~~~~~~~~ Repair of gap")
 (
-    marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR).join(
-        shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR),
-        on=["driver", "members", "idxs", "repair_idxs"],
-        how="full",
-        coalesce=True,
-        suffix="_shapley",
-    )
+    marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER)
+    # .join(
+    #     shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR),
+    #     on=["driver", "members", "idxs", "repair_idxs"],
+    #     how="full",
+    #     coalesce=True,
+    #     suffix="_shapley",
+    # )
 )
 # %%

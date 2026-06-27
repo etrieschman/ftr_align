@@ -16,7 +16,7 @@ from ftr_align.duality import (
 from ftr_align.metrics import EPS
 from ftr_align.cases import toy
 
-CLEAR = "CLARABEL"  # interior-point → analytic-center certificate (paper numbers)
+CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)

@@ -103,9 +103,9 @@ def test_dam_instance_shapes(net):
 def test_end_to_end(net, conts):
     model = NetworkModel.build(net, conts)
     inst = rts.dam_instance(0, net)
-    r = clear_dam(model, inst, solver="CLARABEL")
+    r = clear_dam(model, inst, solver={"solver": "CLARABEL"})
     assert r.status == "optimal"
-    sp = SupportProblem(model, r.direction).solve(solver="CLARABEL")
+    sp = SupportProblem(model, r.direction).solve(solver={"solver": "CLARABEL"})
     assert np.isfinite(sp.value)
     # support value at the DAM's own congestion direction is the congestion rent
     assert sp.value == pytest.approx(r.merch_surp, rel=1e-6)

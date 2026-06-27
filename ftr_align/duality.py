@@ -36,31 +36,79 @@ Classification = Literal["binding", "degenerate", "slack"]
 
 
 def robust_bounds(
-    problem: SupportProblem, solver=None, tol: float = FACE_TOL
+    problem: SupportProblem,
+    solver=None,
+    hi_only: bool = False,
+    tol: float = FACE_TOL,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face: ``Lambda(d)``
-    intersected with ``b^T mu == h*``.  Inactive rows get ``(0, 0)``."""
+    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face ``Lambda(d)`` cap
+    ``{b^T mu == h*}`` -- the robust multiplier range, invariant to which dual
+    optimum a solver returns.  Rows outside the support get ``(0, 0)``; classify
+    with :func:`classify`.  ``hi_only`` skips the ``mu_lo`` solves (e.g. when the
+    support alone is wanted -- though :func:`support_set` is the cheaper way there).
+
+    Two exact accelerations: (1) ``mu`` ranges only over rows binding at the
+    primal optimum, since by complementary slackness every other row is 0 across
+    the whole face; (2) one compiled problem with a Parameter objective is reused
+    across rows/senses instead of rebuilding an LP each time.
+
+    **Runs on HiGHS internally, ignoring the caller's ``solver`` name** (non-solver
+    opts such as ``verbose`` still pass through).  The face is a razor-thin slab
+    that simplex solves exactly while an interior-point method reports infeasible,
+    and the slab is pinned to the base solve's value so both must share an engine.
+    The bounds are solver-invariant, so this changes no results.
+    """
+    # Everything here runs on HiGHS, ignoring the caller's `solver` (we keep any
+    # non-solver opts).  Two reasons: (1) the face LPs optimize over a razor-thin
+    # slab (b^T mu == value +/- tol) on a low-dimensional candidate face -- simplex
+    # handles that exactly, while an interior-point method can't find a strict
+    # interior and reports infeasible; (2) the slab is pinned to `value`, so the
+    # base solve must use the same engine or the two disagree past tol.  The
+    # bounds themselves are solver-invariant.
+    opts = solver if isinstance(solver, dict) else {}
+    lp_opts = {**opts, "solver": "HIGHS"}
     data = problem.data
     active = data.active
-    value = problem.solve(solver=solver).value
+    sol = problem.solve(solver=lp_opts, want_primal=True)
+    value = sol.value
 
-    mu = cp.Variable(data.A.shape[0], nonneg=True, name="mu")
-    s = cp.Variable(name="s")
-    obj = support_objective(data.b[active], mu[active])
-    face = dual_feasible(data.A, mu, s, data.direction) + [
-        obj <= value + tol,
-        obj >= value - tol,
-    ]
-    if (~active).any():
-        face.append(mu[~active] == 0)
+    # Candidates: rows binding at the primal optimum.  By complementary slackness
+    # every other row has mu == 0 across the *entire* optimal face, so (a) only
+    # these can have nonzero bounds and (b) restricting the face LP's mu to them
+    # is exact.  Relative bind_tol since b is large at RTS scale.
+    bind_tol = tol * np.maximum(1.0, np.abs(data.b))
+    candidates = np.where(active & (data.b - data.A @ sol.q <= bind_tol))[0]
 
     lo = np.zeros(data.A.shape[0])
     hi = np.zeros(data.A.shape[0])
-    for i in np.where(active)[0]:
-        cp.Problem(cp.Minimize(mu[i]), face).solve(solver=solver)
-        lo[i] = mu.value[i]
-        cp.Problem(cp.Maximize(mu[i]), face).solve(solver=solver)
-        hi[i] = mu.value[i]
+    if candidates.size == 0:
+        return lo, hi
+
+    # One compiled problem reused across rows and senses: a Parameter objective
+    # selects which mu to extremize, so cvxpy canonicalizes the face once instead
+    # of rebuilding an LP per row.  mu ranges only over the candidate rows.
+    A_c, b_c = data.A[candidates], data.b[candidates]
+    mu = cp.Variable(candidates.size, nonneg=True, name="mu")
+    s = cp.Variable(name="s")
+    face = dual_feasible(A_c, mu, s, data.direction) + [
+        support_objective(b_c, mu) <= value + tol,
+        support_objective(b_c, mu) >= value - tol,
+    ]
+    select = cp.Parameter(candidates.size, name="select")
+    face_prob = cp.Problem(cp.Maximize(select @ mu), face)
+
+    e = np.zeros(candidates.size)
+    for j, i in enumerate(candidates):
+        e[j] = 1.0  # maximize mu_i -> hi
+        select.value = e
+        face_prob.solve(**lp_opts)
+        hi[i] = mu.value[j]
+        if not hi_only:
+            e[j] = -1.0  # maximize -mu_i == minimize mu_i -> lo
+            select.value = e
+            face_prob.solve(**lp_opts)
+            lo[i] = mu.value[j]
+        e[j] = 0.0
     return lo, hi
 
 
@@ -84,6 +132,20 @@ def support_index(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
     """``I(b;d)``: rows carrying positive weight in some optimal certificate
     (``mu_hi > 0``) -- binding or degenerate.  Only these carry attribution."""
     return np.where(hi > tol)[0]
+
+
+def support_set(problem: SupportProblem, tol: float = CLASS_TOL) -> np.ndarray:
+    """``I(b;d)`` from a single interior-point solve -- ~100x cheaper than the
+    :func:`robust_bounds` face-LP loop, which is needed only for the lo/hi ranges
+    (:func:`classify`).
+
+    By Goldman-Tucker strict complementarity an interior-point method converges
+    to the analytic center of the optimal dual face, whose support is *exactly*
+    ``I``.  **CLARABEL is required and not overridable**: the result is exact only
+    for an interior-point solver -- a simplex vertex (e.g. HiGHS) gives a strict
+    subset of ``I`` (it misses degenerate rows)."""
+    mu = problem.solve(solver={"solver": "CLARABEL"}).mu
+    return np.where(mu > tol)[0]
 
 
 def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
@@ -167,15 +229,21 @@ def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
 
 
 def attribution_blocks(
-    problem: SupportProblem, mu: np.ndarray | None = None, solver=None
+    problem: SupportProblem,
+    mu: np.ndarray | None = None,
+    index: np.ndarray | None = None,
+    solver=None,
 ) -> pl.DataFrame:
     """Attribution blocks over the support with per-block totals
     ``W_{G_r} = sum_{i in G_r} b_i mu_i`` (invariant across the optimal face).
-    If ``mu`` is omitted a support solve supplies one (any face point works)."""
+
+    The support ``index = I(b;d)`` defaults to :func:`support_set` (one CLARABEL
+    solve); pass a precomputed ``index`` to reuse it.  ``mu`` defaults to a support
+    solve on ``solver`` (any optimal dual works -- ``W`` is face-invariant)."""
     if mu is None:
         mu = problem.solve(solver=solver).mu
-    _, hi = robust_bounds(problem, solver=solver)
-    index = support_index(hi)
+    if index is None:
+        index = support_set(problem)  # CLARABEL: support via strict complementarity
     blocks = connected_blocks(trade_matrix(problem, index))
 
     labels = problem.model.labels()

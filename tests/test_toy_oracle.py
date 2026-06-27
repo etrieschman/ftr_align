@@ -17,7 +17,7 @@ import pytest
 from ftr_align import SupportProblem, clear_dam
 from ftr_align.cases import toy
 
-CLEAR_SOLVER = "CLARABEL"
+CLEAR_SOLVER = {"solver": "CLARABEL"}
 
 # (MS_DAM, Delta, eta) per (model variation, scenario) -- PowerUp Table II
 TABLE_II = {

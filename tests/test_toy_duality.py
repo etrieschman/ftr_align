@@ -9,7 +9,7 @@ from ftr_align import SupportProblem, clear_dam
 from ftr_align.duality import classify, discrepancy, net_dual, robust_bounds
 from ftr_align.cases import toy
 
-CLEAR_SOLVER = "CLARABEL"
+CLEAR_SOLVER = {"solver": "CLARABEL"}
 
 # signed net dual mu = mu_upper - mu_lower, keyed (contingency_label, element)
 # PowerUp Table III; "B" -> base.  Values rounded as printed; compared with abs=2.

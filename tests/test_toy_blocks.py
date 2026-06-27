@@ -24,7 +24,7 @@ from ftr_align.duality import (
 )
 from ftr_align.cases import toy
 
-CLEAR = "CLARABEL"
+CLEAR = {"solver": "CLARABEL"}
 
 
 def _gap(dam, ftr, scenario="(a)"):
@@ -101,8 +101,8 @@ def test_block_total_is_face_invariant():
     dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
     prob = SupportProblem(sys, dam.direction)
 
-    mu_clarabel = prob.solve(solver="CLARABEL").mu
-    mu_highs = prob.solve(solver="HIGHS").mu
+    mu_clarabel = prob.solve(solver={"solver": "CLARABEL"}).mu
+    mu_highs = prob.solve(solver={"solver": "HIGHS"}).mu
     sl = sys.rows_upper(None)[:2]
     # the split genuinely differs between solvers...
     assert not np.allclose(mu_clarabel[sl], mu_highs[sl], atol=1.0)
