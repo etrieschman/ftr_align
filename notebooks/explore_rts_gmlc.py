@@ -25,7 +25,7 @@ SOLVER = {"solver": "HiGHS"}
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
-rng = np.random.default_rng(42)
+rng = np.random.default_rng(12345)
 
 
 # %%
@@ -46,15 +46,16 @@ model.labels().head()
 # -------------------------------------
 # Random networks
 # -------------------------------------
-dam_cont = [cont[i] for i in rng.choice(len(cont), 50, replace=False)]
-ftr_cont = [cont[i] for i in rng.choice(len(cont), 50, replace=False)]
+base = [cont[0]]  # always include base case
+dam_cont = base + [cont[i + 1] for i in rng.choice(len(cont) - 1, 25, replace=False)]
+ftr_cont = base + [cont[i + 1] for i in rng.choice(len(cont) - 1, 25, replace=False)]
 dam_model = network.NetworkModel.build(network=net, contingencies=dam_cont)
 ftr_model = network.NetworkModel.build(network=net, contingencies=ftr_cont)
 
 interval_rows = []
 dual_rows = []
-interval_start = rts_gmlc.interval_index(8, 10, 15)
-interval_end = rts_gmlc.interval_index(8, 10, 21)
+interval_start = rts_gmlc.interval_index(8, 5, 1)
+interval_end = rts_gmlc.interval_index(8, 15, 1)
 intervals = np.arange(interval_start, interval_end, 1, dtype=int)
 for interval in tqdm(intervals):
     dam_sol = clear_dam(
@@ -120,7 +121,6 @@ print("\n~~~~~~~~ FTR model")
 print("FTR support value:", round(ftr_dual.value, 1))
 print("FTR support rows :", index.tolist())
 print("FTR trade space dim:", D.shape[1])
-px.imshow(D, labels={"x": "trade space dim", "y": "support row"}).show()
 ftr_attr = attribution_blocks(ftr_prob, mu=ftr_dual.mu, index=index)
 display(ftr_attr)
 
