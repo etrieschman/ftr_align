@@ -3,6 +3,7 @@ import numpy as np
 import scipy as sp
 import polars as pl
 import cvxpy as cp
+from itertools import product
 
 from ftr_align import SupportProblem, NetworkModel, Contingency
 from ftr_align.solve import dual_feasible
@@ -34,109 +35,209 @@ np.set_printoptions(precision=3, suppress=True)
 # INSPECT NETWORK
 # -------------------------------------
 net = toy_degen.NETWORK
-print("~~~~~~ Toy network:")
+K = net.ptdf()
+n = net.n_nodes
+ell = net.n_elements
+
+print("~~~~~~ Toy network")
 print("nodes   :", net.node_names.tolist())
 print("elements:", net.element_names.tolist())
 print("slack   :", net.node_names[net.slack_idx])
-print("limits  :", toy_degen.BASE_LIMITS.tolist())
-K = net.ptdf()
-print(f"PTDF (line x node):\n{K}")
-A = np.concatenate([K, -K], axis=0)
-A_bar = A - np.mean(A, axis=1, keepdims=True)
-active = [WS, WD1, SD, ND, NH, DH]
-print(f"Connected blocks:{connected_blocks(A_bar[active].T)}")
+print("x       :", net.x.tolist())
+
 
 # %%
 # -------------------------------------
-# ONE network + ONE b (from scenario iii); y selects the block per scenario
+# LIMIT DESIGN
 # -------------------------------------
-q_iii    = np.array([300, 200, 100, -200, -400])       # fixes the limits
-scenarios = {
-    "i": [WD1, WD2], # reward WD corridor
-    "ii":   [WN, WS, NH, SH], # reward perimeter
-    "iii":[WN, ND, WD1, WD2, SD, SH, DH], # reward two triangles
-}
-b_plus = np.abs(np.round(K @ q_iii, 3))                # per-edge upper limit
-b_plus = [
-    b_plus[i] * 1.05 
-    if i not in scenarios["iii"] else b_plus[i] 
-    for i in range(len(b_plus))
+def solve_limit_design(patterns):
+    q = {name: cp.Variable(n, name=f"q_{name}") for name in patterns}
+    b = cp.Variable(ell, name="b")
+    delta = cp.Variable(nonneg=True, name="delta")
+
+    const = [
+        b >= 10,
+        b <= 500,
+        b[WD1] == 100,
+        b[WD2] == b[WD1],
     ]
-b      = np.concatenate([b_plus, b_plus])            # [upper; lower] for A=[K;-K]
 
-model = NetworkModel.build(net, contingencies=[Contingency(None, upper=b_plus)])
+    for name, pattern in patterns.items():
+        active = dict(pattern)
+        f = K @ q[name]
 
-def make_y(edges, val=25.0):
-    yv = np.zeros(len(net.element_names)*2)
-    yv[edges] = val
-    return yv
+        if len(active) != len(pattern):
+            raise ValueError(f"{name} contains a repeated element")
 
-for name, rewarded in scenarios.items():
-    y = make_y(rewarded)
-    problem = SupportProblem(model, A.T @ y)
-    h_b = problem.solve()
-    print(f"\n{name}   h(b;y) = {h_b.value:,.0f}")
-    print(f"binding =\n{h_b.binding}")
-    display(attribution_blocks(problem))
+        const += [
+            cp.sum(q[name]) == 0,
+            q[name][W] >= 0,
+            q[name][N] >= 0,
+            q[name][H] <= 0,
+            q[name] >= -1_000,
+            q[name] <= 1_000,
+        ]
 
+        for e in range(ell):
+            if e in active:
+                const += [f[e] == active[e] * b[e]]
+            else:
+                const += [
+                    f[e] <= b[e] - delta,
+                    f[e] >= -b[e] + delta,
+                ]
 
+    problem = cp.Problem(cp.Maximize(delta), const)
+    problem.solve(solver=cp.HIGHS)
+    return problem, b, q
 
 
 # %%
 # -------------------------------------
-# MANUALLY CONSTRUCT DEGENERATE DISJOINT BLOCKS
+# SEARCH DIRECTIONS
 # -------------------------------------
-# Make disjoint connected blocks
-# 0. choose active constraints that form disjoint blocks
-active = [WN, WD1, WD2, ND, SD, SH, DH]
-print(f"Connected blocks:{connected_blocks(A_bar[active].T)}")
+results = []
+tol = 1e-6
 
-# 1. choose injections
-q = [300, 200, 100, -200, -400]
-f = K @ q
-print(f"balanced: {np.isclose(np.sum(q),0)}")
-print(f"\t{net.node_names}\nq =\t{q}")
-print(f"\t{net.element_names}\nf =\t{f}")
+for directions in product([-1, +1], repeat=8):
+    (
+        d_parallel,
+        d_wd_block,
+        d_nd,
+        d_sd,
+        d_wn,
+        d_ws,
+        d_nh,
+        d_sh,
+    ) = directions
 
-# 2. set the limits to make the chosen constraints active
-b_plus = np.array([
-    np.abs(np.round(fi, 3))
-    if i in active else 400 
-    for i,fi in enumerate(f)
-    ], dtype=float) 
-b = np.concatenate([b_plus, b_plus], axis=0)
-y_val = np.ones(len(f))*25
-y = np.array([
-    y_val[i] 
-    if i in active + [-i for i in active] else 0 
-    for i,__ in enumerate(b)
-])
+    patterns = {
+        "parallel_wd": [
+            (WD1, d_parallel),
+            (WD2, d_parallel),
+        ],
+        "two_blocks": [
+            (WN, +1),
+            (ND, d_nd),
+            (WD1, d_wd_block),
+            (WD2, d_wd_block),
+            (SD, d_sd),
+            (DH, +1),
+            (SH, +1),
+        ],
+        "outer_loop": [
+            (WN, d_wn),
+            (NH, d_nh),
+            (SH, d_sh),
+            (WS, d_ws),
+        ],
+        "no_loop": [
+            (WN, +1),
+            (SH, +1),
+        ],
+    }
 
-# confirm via solve
-qvar = cp.Variable(len(q))
-prob = cp.Problem(
-    cp.Maximize(y @ A @ qvar), 
-    [A @ qvar <= b, cp.sum(qvar) == 0]
+    problem, b, _ = solve_limit_design(patterns)
+
+    if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
+        continue
+    if problem.value <= tol:
+        continue
+
+    results.append({
+        "patterns": patterns,
+        "limits": b.value.copy(),
+        "delta": float(problem.value),
+        "n_pos": sum(d > 0 for d in directions),
+        "parallel_WD": d_parallel,
+        "block_WD": d_wd_block,
+        "ND": d_nd,
+        "SD": d_sd,
+        "outer_WN": d_wn,
+        "outer_WS": d_ws,
+        "outer_NH": d_nh,
+        "outer_SH": d_sh,
+    })
+
+if not results:
+    raise RuntimeError("No strictly feasible patterns found")
+
+display(
+    pl.DataFrame([
+        {k: v for k, v in r.items() if k not in {"patterns", "limits"}}
+        for r in results
+    ]).sort(["delta", "n_pos"], descending=True)
+)
+
+
+# %%
+# -------------------------------------
+# SELECT BEST PATTERN
+# -------------------------------------
+best = max(results, key=lambda r: (r["delta"], r["n_pos"]))
+PATTERNS = best["patterns"]
+
+problem, b, q = solve_limit_design(PATTERNS)
+
+print("status:", problem.status)
+print("margin:", problem.value)
+
+display(pl.DataFrame({
+    "element": net.element_names,
+    "limit": b.value,
+}))
+
+
+# %%
+# -------------------------------------
+# VERIFY PATTERNS AND BLOCKS
+# -------------------------------------
+model = NetworkModel.build(
+    net,
+    [Contingency(None, upper=b.value)],
+)
+
+for name, pattern in PATTERNS.items():
+    requested = dict(pattern)
+    designed_flow = K @ q[name].value
+
+    y = np.zeros(model.n_rows)
+    for e, direction in pattern:
+        row = e if direction == +1 else ell + e
+        y[row] = 1.0
+
+    support_problem = SupportProblem(model, model.A.T @ y)
+    solution = support_problem.solve()
+
+    rows = []
+
+    for e, element in enumerate(net.element_names):
+        for direction, row in [("upper", e), ("lower", ell + e)]:
+            signed_flow = designed_flow[e] if direction == "upper" else -designed_flow[e]
+            target_direction = requested.get(e)
+
+            rows.append({
+                "constraint": f"base : {element} : {direction}",
+                "flow": signed_flow,
+                "limit": b.value[e],
+                "slack": b.value[e] - signed_flow,
+                "target": (
+                    target_direction == +1 and direction == "upper"
+                ) or (
+                    target_direction == -1 and direction == "lower"
+                ),
+                "binding": solution.binding[row].item(),
+            })
+
+    print(f"\n{name}")
+    print(f"h(b; y) = {solution.value:,.2f}")
+
+    display(
+        pl.DataFrame(rows)
+        .filter(pl.col("target") | pl.col("binding"))
+        .sort("constraint")
     )
-prob.solve()
-print(f"f@y =\t {f @ (y[:len(f)] - y[len(f):]):0.2f}  prob.value = {prob.value:0.2f}")
-print(f"lmp =\t {-y @ A}")
-print(f"MS_DAM = {y @ A @ q:,.2f}")
+
+    display(attribution_blocks(support_problem))
 
 # %%
-# -------------------------------------
-# CONFIRM USING MACHINERY
-# -------------------------------------
-model = NetworkModel.build(net, contingencies=[Contingency(None, upper=b[:len(f)])])
-problem = SupportProblem(model, A.T @ y)
-h_b = problem.solve()
-print(f"h(f) = MS_DAM = {h_b.value:,.0f}")
-h_b.binding
-
-blocks = attribution_blocks(problem)
-# blocks.with_columns(
-#     pl.col("members").list.join(separator=", "),
-#     pl.col("rows").list.as_type(str).list.join(separator=", "),
-# )
-blocks
-

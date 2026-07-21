@@ -19,7 +19,7 @@ INC = np.array([
     [0, -1,  0,  0,  0,  0,  1,  1,  0], 
     [0,  0, -1, -1, -1,  0, -1,  0,  1], 
     [0,  0,  0,  0,  0,  -1,  0, -1, -1]], dtype=float)
-X = np.array([1.0]*len(ELEMENT_NAMES))  # reactances
+X = np.array([2., 1., 1., 1., 2., 2., 1., 2., 1.])  # reactances
 BASE_LIMITS = np.array([100.]*len(ELEMENT_NAMES))  # line limits
 NETWORK = PhysicalNetwork(
     inc=INC, x=X, slack_idx=D, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
