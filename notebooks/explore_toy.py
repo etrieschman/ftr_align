@@ -105,7 +105,7 @@ PATTERN = "mixed"
 SCENARIO = "(a)"
 print(f"PATTERN={PATTERN}, SCENARIO={SCENARIO}\n")
 # Robust duals & attribution blocks (redundant variant)
-dam_model, ftr_model = toy.MODELS[PATTERN]
+dam_model, ftr_model = toy.REDUNDANT_MODELS[PATTERN]
 dam = clear_dam(dam_model, toy.SCENARIOS[SCENARIO], solver=CLEAR)
 dam_prob = SupportProblem(dam_model, dam.direction)
 ftr_prob = SupportProblem(ftr_model, dam.direction)
@@ -141,7 +141,6 @@ display(attribution_blocks(ftr_prob, solver=CLEAR))
 # Repair: per-block attribution of the gap Δ = h(g) - h(f).  marginal_repair =
 # each block's standalone effect (not additive when drivers mask each other);
 # shapley_repair = order-averaged, additive (sums to Δ).
-dam_model, ftr_model = toy.MODELS[PATTERN]  # both underfunding + hedging drivers
 d = clear_dam(dam_model, toy.SCENARIOS[SCENARIO], solver=CLEAR).direction
 print("\n~~~~~~~~ Repair of gap")
 (

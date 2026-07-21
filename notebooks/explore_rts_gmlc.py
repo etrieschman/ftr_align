@@ -19,7 +19,6 @@ from ftr_align.duality import (
 )
 from ftr_align.metrics import EPS
 from ftr_align.cases import rts_gmlc
-from tests.test_toy_blocks import CLEAR
 
 SOLVER = {"solver": "HiGHS"}
 
@@ -131,7 +130,7 @@ display(ftr_attr)
 print("\n~~~~~~~~ Repair of gap")
 (
     marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER).join(
-        shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=CLEAR),
+        shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER),
         on=["driver", "members", "idxs", "repair_idxs"],
         how="full",
         coalesce=True,

@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.7",
     "highspy",
     "tqdm",
+    "plotly",
 ]
 
 [project.optional-dependencies]
