@@ -1,12 +1,12 @@
 """Slice 2 oracle: reproduce Table III (support-function dual values) and
-exercise the robust-bound / classification / discrepancy machinery on the toy.
+exercise the robust-bound and discrepancy machinery on the toy.
 """
 
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, clear_dam
-from ftr_align.duality import classify, discrepancy, net_dual, robust_bounds
+from ftr_align import SupportProblem, clear_dam, discrepancy, net_dual
+from ftr_align.duality import robust_bounds
 from ftr_align.cases import toy
 
 CLEAR_SOLVER = {"solver": "CLARABEL"}
@@ -65,16 +65,6 @@ def test_toy_duals_are_unique():
     for model in (f_model, g_model):
         lo, hi = robust_bounds(SupportProblem(model, dam.direction), solver=CLEAR_SOLVER)
         assert np.allclose(lo, hi, atol=1e-4)
-
-
-def test_classification():
-    _, g_model = toy.MODELS["derate"]
-    dam = clear_dam(g_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
-    lo, hi = robust_bounds(SupportProblem(g_model, dam.direction), solver=CLEAR_SOLVER)
-    classes = classify(lo, hi)
-    # scenario (a): exactly the base:SL upper row binds, nothing degenerate
-    assert classes.count("binding") == 1
-    assert "degenerate" not in classes
 
 
 def test_discrepancy_kinds_and_modes():

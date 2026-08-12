@@ -8,15 +8,14 @@ from ftr_align import SupportProblem, clear_dam, dual_summary
 from ftr_align import network
 from ftr_align.duality import (
     attribution_blocks,
-    classify,
-    marginal_repair,
+    block_totals,
     robust_bounds,
-    J_star_from_bounds,
     J_star,
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import EPS
+from ftr_align.attribution import block_shares, failure_modes
+from ftr_align.metrics import EPS, block_table
 from ftr_align.cases import rts_gmlc
 
 SOLVER = {"solver": "HiGHS"}
@@ -97,7 +96,7 @@ ftr_prob = SupportProblem(ftr_model, dam_sol.direction)
 
 # inspect DAM model.  J_star gets J*(b;y) from one CLARABEL solve (strict
 # complementarity) -- ~50-130x cheaper than the robust_bounds face-LP loop, which
-# we'd need only for lo/hi ranges (classify).  Pass index to skip it in attribution.
+# we'd need only for the lo/hi ranges.  Pass index to skip it in attribution.
 dam_dual = dam_prob.solve(solver={"solver": "CLARABEL"})
 index = J_star(dam_prob)
 C = trade_matrix(dam_prob, index)
@@ -106,7 +105,9 @@ print("~~~~~~~~ DAM model")
 print("DAM support value:", round(dam_dual.value, 1))
 print("DAM support rows :", index.tolist())
 print("DAM trade space dim:", D.shape[1])
-dam_attr = attribution_blocks(dam_prob, mu=dam_dual.mu, index=index)
+dam_blocks = attribution_blocks(dam_prob, index=index)
+dam_attr = block_table(dam_model, dam_blocks,
+                         block_totals(dam_prob.data.b, dam_dual.mu, dam_blocks))
 display(dam_attr)
 
 
@@ -119,13 +120,19 @@ print("\n~~~~~~~~ FTR model")
 print("FTR support value:", round(ftr_dual.value, 1))
 print("FTR support rows :", index.tolist())
 print("FTR trade space dim:", D.shape[1])
-ftr_attr = attribution_blocks(ftr_prob, mu=ftr_dual.mu, index=index)
+ftr_blocks = attribution_blocks(ftr_prob, index=index)
+ftr_attr = block_table(ftr_model, ftr_blocks,
+                         block_totals(ftr_prob.data.b, ftr_dual.mu, ftr_blocks))
 display(ftr_attr)
 
 
-# Repair: per-block attribution of the gap Δ(f,g;y) = h(f;y) - h(g;y).  Each
-# block's standalone effect -- not additive when the two failure modes mask each
-# other (prop:repair_nonadditive).
-print("\n~~~~~~~~ Repair of gap")
-marginal_repair(ftr_model, dam_model, dam_sol.direction, solver=SOLVER)
+# Failure modes and their block-level attribution (prop:block_underfunding).
+print("\n~~~~~~~~ Failure modes")
+print(failure_modes(ftr_model, dam_model, dam_sol.direction, solver=SOLVER))
+for mode, model in (("U", ftr_model), ("V", dam_model)):
+    blocks, shares = block_shares(
+        ftr_model, dam_model, dam_sol.direction, mode=mode, solver=SOLVER
+    )
+    print(f"\n{mode} by block")
+    display(block_table(model, blocks, shares, value_name=mode))
 # %%

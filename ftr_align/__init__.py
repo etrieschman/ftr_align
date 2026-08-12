@@ -1,4 +1,13 @@
-"""ftr_align -- FTR/DAM structural misalignment via support-function geometry."""
+"""ftr_align -- FTR/DAM structural misalignment via support-function geometry.
+
+Layered so that each level only depends on the ones below it:
+
+* ``network``     -- geometry: incidence ``A``, PTDF ``H``, stacked ``K``, models
+* ``solve``       -- the support LP and DAM clearing
+* ``duality``     -- dual face, primal face, trade space, attribution blocks
+* ``attribution`` -- failure modes, repairs, floor/ceiling, block shares
+* ``metrics``     -- the only layer that labels rows and emits tables
+"""
 
 from .network import (
     Contingency,
@@ -19,7 +28,8 @@ from .solve import (
     clear_dam,
     solve_support_cvxpy,
 )
-from .metrics import alignment_summary, dual_summary
+from .attribution import discrepancy, failure_modes
+from .metrics import alignment_summary, dual_summary, net_dual
 
 __all__ = [
     "Contingency",
@@ -37,6 +47,9 @@ __all__ = [
     "SupportSolution",
     "clear_dam",
     "solve_support_cvxpy",
+    "discrepancy",
+    "failure_modes",
     "alignment_summary",
     "dual_summary",
+    "net_dual",
 ]

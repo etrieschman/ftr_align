@@ -19,9 +19,12 @@ rewriting per network.
 | `K = [H; −H]` | stacked constraint matrix | `NetworkModel.K` |
 | `y`, `d = Kᵀy` | price certificate; node-space direction | `DamResult.y`, `.direction` |
 | `Λ(y)`, `Λ*(b;y)` | dual-feasible set, optimal dual face | `Lambda`, `Lambda_star` |
-| `J*(b;y)` | dual-optimal support | `J_star`, `J_star_from_bounds` |
+| `J*(b;y)` | dual-optimal support | `J_star` (one CLARABEL solve) |
 | `D(b;y) = ker C(b;y)` | trade space | `trade_space`, `trade_matrix` |
-| `W_{J_r}` | block total | `attribution_blocks(...)["W"]` |
+| `W_{J_r}` | block total | `block_totals` |
+| `f ∧ g` | intersection model | `meet` |
+| `U`, `V` | failure modes | `failure_modes` |
+| `U^(S)` | repair value | `repair_value` |
 
 **Naming convention:** capitalized functions (`Lambda`, `Lambda_star`) are
 *assembly* — they return cvxpy constraint lists and never solve; lowercase
@@ -84,9 +87,12 @@ functions solve. Model pairs are always ordered `(f, g)`, matching `Δ(f,g;y)`;
   pulls `opts = solver if isinstance(solver, dict) else {}` once.) Erich's future
   ex-ante solver will *orchestrate* CVXPY LP subproblems (bilinear, over a union of
   polyhedra), not replace CVXPY.
-- Assembly functions (`Lambda`, `Lambda_star`, `support_objective`,
-  `network_constraints` in `solve.py`) accept numpy **or** cvxpy args and are
-  reused by `solve` and `duality` (one definition each — no re-spelling).
+- Assembly functions (`Lambda`, `Lambda_star`, `network_constraints` in
+  `solve.py`) accept numpy **or** cvxpy args and are reused by `solve`,
+  `duality` and `clear_dam` (one definition each — no re-spelling). `clear_dam`
+  builds its network block with `network_constraints` on the active rows, so the
+  dual of that single row block **is** the certificate `y*` in stacked order — no
+  per-contingency scatter.
 - `K` is **dense numpy** — PTDF is structurally dense, so sparse storage wastes.
   The scale lever is active-set / column-generation, not sparse storage.
 
@@ -97,10 +103,18 @@ non-uniqueness — the thing the robust framework targets). The paper's numbers
 correspond to the **analytic-center certificate**, which an interior-point solver
 (`CLARABEL`) produces; simplex (`HIGHS`) gives an equally-valid vertex dual with
 a different split. The support *value* given `y*` is unique. **Clear with
-`solver={"solver": "CLARABEL"}`** to reproduce paper numbers. In `duality.py`, the classification
-tolerance (`CLASS_TOL`) must exceed the face-construction leak (`FACE_TOL`).
+`solver={"solver": "CLARABEL"}`** to reproduce paper numbers. In `duality.py` the
+support threshold (`SUPPORT_TOL`) must exceed the face-construction leak
+(`FACE_TOL`); `face_leak()` is the same relationship on the primal side.
 
 ## Layout
+
+**Layering.** Each level depends only on those below it, and there is one hard
+line: **computation returns numpy/plain values; only `metrics` labels rows and
+emits DataFrames.** The computed objects are co-indexed vectors over the rows of
+`K` — that indexing is the invariant the whole package leans on, and it survives
+only if labels stay out of it. It also keeps the numerical layer testable against
+the memos' propositions directly, with no table in between.
 
 ```
 ftr_align/
@@ -108,31 +122,41 @@ ftr_align/
                 `tap`), is_connected (bridge/islanding guard), PhysicalNetwork
                 (owns `A`, optional `tap`), Contingency (key + limits; pass one
                 `upper` for symmetric), NetworkModel (owns K & b; `.H` is the
-                stacked PTDF, the upper half of K), align, embed,
+                stacked PTDF, the upper half of K), align, embed, meet (f ^ g),
                 contingency_label/element_label
-  solve.py      assembly fns (Lambda/Lambda_star/support_objective/
-                network_constraints), SupportData, SupportProblem,
-                solve_support_cvxpy, SupportSolution, DamInstance, DamResult,
-                clear_dam (returns y* and direction)
+  solve.py      assembly fns (Lambda / Lambda_star / network_constraints),
+                SupportData, SupportProblem, solve_support_cvxpy,
+                SupportSolution, DamInstance, DamResult, clear_dam (returns y*
+                and direction)
   duality.py    robust_bounds (lo/hi over the dual face; mu restricted to
                 primal-binding candidates, single compiled Parameter-objective LP
                 reused across rows, forced onto HiGHS internally -- the thin
                 value-slab is infeasible for interior-point and must share the
-                base solve's engine; bounds are solver-invariant), classify,
-                J_star_from_bounds (from a robust_bounds hi vector), J_star
+                base solve's engine; bounds are solver-invariant), J_star
                 (J*(b;y) from one CLARABEL solve via strict complementarity --
                 CLARABEL required, ~50-130x cheaper than the face-LP loop),
-                net_dual, trade_matrix, trade_space (D=ker C), connected_blocks
-                (matroid components via QR fundamental circuits),
-                attribution_blocks (index defaults to J_star), discrepancy
-                (level/coverage x U/V per prop:kinds), marginal_repair
-  metrics.py    alignment_summary (Table II), dual_summary (Table III)
+                primal_face_range + face_leak, in_span, trade_matrix,
+                trade_space (D=ker C), connected_blocks (matroid components via
+                QR fundamental circuits), attribution_blocks (row indices per
+                block), block_totals (W_{J_r})
+  attribution.py  failure_modes (U/V/Delta), repaired + repair_value (U^(S),
+                repairing toward f ^ g), floor, ceiling, exact_split +
+                row_shares, block_shares (prop:block_underfunding),
+                primal_invariant + block_share_range, discrepancy
+                (level/coverage x U/V per prop:kinds)
+  metrics.py    net_dual, row_labels, alignment_summary (Table II),
+                dual_summary (Table III), block_table
   cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,
                 bid matrices) + the paper's cases as constants: SCENARIOS (label
                 -> DamInstance, via dam_instance(q_dem, max_gen)), MODELS (label
                 -> (f, g) pair == (FTR, DAM), built from Contingency lists),
                 REDUNDANT_MODELS (double-circuit variant).  No builder fn --
                 models are assembled inline with NetworkModel.build.
+  cases/texas5.py  5-node of the attribution memo (fig_texas5): parallel WD pair
+                (non-singleton Lambda*), WN/SH pair (priced, no circulation ->
+                individually identified), SDH triangle (circulation).  Topology
+                only -- bid data is a stub and deliberately not finished; posit
+                `d` instead.
   cases/rts_gmlc.py  73-bus loader: SHA-pinned fetch (RTS_GMLC_REF + MANIFEST
                 checksums) of bus/branch/gen CSVs + day-ahead load/renewable
                 timeseries -> load_network (DC PTDF w/ magnitude taps),
@@ -141,6 +165,9 @@ ftr_align/
                 segments, interval-synced renewable caps, regional load split to
                 buses). Cache gitignored.
 tests/          oracle tests: Tables II & III, strong duality, blocks, align;
+                test_primitives (meet / primal_face_range / in_span);
+                test_attribution (T0 plumbing -- every memo invariant, over all
+                4 cases x 3 scenarios x both modes);
                 test_rts_gmlc (loader invariants + end-to-end, skips if offline)
 ```
 Library is importable only; analysis run-scripts go in a sibling `notebooks/`
@@ -206,6 +233,34 @@ So T2 needs a **tuned** case (α ≈ 0.85–0.9 at scenario (a)), not `mixed` as
 stands. Scenarios (b)/(c) give `V = 0` and `U = 0` respectively at every α, so
 the witness is scenario-specific too.
 
+### A finding from step 3: tolerances must scale with the *support values*
+
+Every attribution quantity — `U`, `V`, a repair value, a floor, a block share —
+is a **difference of support values** of order `1e4`, so its absolute error is
+`~1e-4` however small the difference itself is. Several toy cases have a failure
+mode of exactly zero, so a tolerance proportional to the quantity being tested
+demands more precision than the inputs carry, and 29 of the first T0 runs failed
+on that alone. `tests/test_attribution.py::_tol` scales by `max(|h_f|, |h_g|)`
+instead, and this is the right default for anything comparing these objects.
+
+It has to be a *tolerance* rather than exact equality because these bounds are
+genuinely **attained**: `cor:canonical` item 1 makes the floor exactly tight for
+a uniform derate, and the ceiling closes at `q^∧` by construction, so the
+comparisons are routinely between two computations of the same number.
+
+### Removed in step 3, with reasons
+
+- `classify` / `Classification` — binding/degenerate/slack is a one-line read of
+  `robust_bounds`' `(lo, hi)`; nothing downstream consumed the labels.
+- `J_star_from_bounds` — `J_star` is one CLARABEL solve and exact. The
+  `hi`-vector route only existed to reuse a `robust_bounds` call, and with
+  `classify` gone there is no reason to run those face LPs just to get a support.
+- `support_objective` — it was `b @ mu`. A named wrapper earned nothing.
+- `marginal_repair` / `_repair_blocks` — superseded by `repair_value` (repairs
+  toward `f ∧ g`, so monotone) and `block_shares` (which takes `U` from the
+  blocks of `f` and `V` from those of `g`, per `prop:block_underfunding` —
+  `_repair_blocks` had these the other way round).
+
 ### Per-contingency / asymmetric / emergency-rating limits
 Supported: `b` is a free per-row vector and `clear_dam` reads the upper and lower
 limit per contingency independently. (`from_limits` was considered and dropped —
@@ -228,22 +283,16 @@ limit per contingency independently. (`from_limits` was considered and dropped �
 
 ### Next — the misalignment-attribution test backlog (T0–T5, toy first)
 
-Steps 1 (notation) and 2 (primitives) are **done**. Remaining, in order:
+Steps 1 (notation), 2 (primitives) and 3 (`attribution.py`) are **done**.
+Remaining, in order:
 
-3. **`attribution.py` — reporting, not primitives.** `U`, `V`, `Δ = U − V`;
-   `U^(S)`; the floor `Σ_{i∈S} μ^f_i [f_i − (f∧g)_i]`; the ceiling
-   `fᵀμ − dᵀq` (takes `q` as an argument — by `rem:injection_nesting` the choice
-   of `q` *is* the bound); `cor:exact_split`; `U_B`. All arithmetic over solved
-   objects. T0 assertions written alongside, not after. Retarget
-   `marginal_repair` to `f ∧ g` and reconcile `_repair_blocks` with
-   `prop:block_underfunding` here.
 4. **Results tables** (tidy polars, run-level + row-level); port
    `alignment_summary`/`dual_summary` onto them as views.
 5. **T1, T2 on the 3-node.** `cor:canonical` items 1/4/5 are exact closed forms —
    pass/fail, no tolerance judgment. **Stop and read the floor-to-total ratio**:
    it decides whether the floor is an instrument or a footnote, and how much
    reporting apparatus is worth carrying to RTS.
-6. **5-node (`toy_degen`), bid-free.** Topology already matches `fig_texas5`
+6. **5-node (`cases/texas5.py`), bid-free.** Topology already matches `fig_texas5`
    (parallel `WD1`/`WD2`, the no-circulation `WN`/`SH` pair, the `SDH` triangle)
    but `M_GEN`/`M_DEM` are copy-pasted from the 3-node at the wrong node count.
    Posit `d` directly rather than writing bids. Then T3/T4 as queries over one

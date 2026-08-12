@@ -13,7 +13,7 @@ from ftr_align.duality import (
     face_leak,
     J_star,
     in_span,
-    primal_face,
+    primal_face_range,
     robust_bounds,
     trade_matrix,
     trade_space,
@@ -150,7 +150,7 @@ def test_primal_face_collapses_when_two_constraints_bind():
     prob = SupportProblem(g, d)
     value = prob.solve(solver={"solver": "HIGHS"}).value
     for w in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, -1.0])):
-        rng = primal_face(prob, w, solver=CLEAR)
+        rng = primal_face_range(prob, w, solver=CLEAR)
         assert rng.width <= face_leak(value, w)
         assert np.allclose(rng.q_lo, rng.q_hi, atol=1e-3)
 
@@ -166,7 +166,7 @@ def test_primal_face_opens_up_when_one_constraint_binds():
     value = prob.solve(solver={"solver": "HIGHS"}).value
 
     w = np.array([1.0, -1.0, 0.0])  # varies along the edge
-    rng = primal_face(prob, w, solver=CLEAR)
+    rng = primal_face_range(prob, w, solver=CLEAR)
     assert rng.width > 100 * face_leak(value, w)  # genuinely unidentified
 
     for q in (rng.q_lo, rng.q_hi):
@@ -183,7 +183,7 @@ def test_primal_face_range_is_zero_for_the_direction_itself():
     d = _direction(g)
     prob = SupportProblem(g, d)
     value = prob.solve(solver={"solver": "HIGHS"}).value
-    rng = primal_face(prob, d, solver=CLEAR)
+    rng = primal_face_range(prob, d, solver=CLEAR)
     assert rng.width <= face_leak(value, d)
 
 
@@ -268,7 +268,7 @@ def test_primal_invariance_condition_predicts_the_observed_range():
     assert in_span(basis, w_in)
     assert not in_span(basis, w_out)
 
-    assert primal_face(prob_m, w_in, solver=CLEAR).width <= face_leak(value, w_in)
-    assert primal_face(prob_m, w_out, solver=CLEAR).width > 100 * face_leak(
+    assert primal_face_range(prob_m, w_in, solver=CLEAR).width <= face_leak(value, w_in)
+    assert primal_face_range(prob_m, w_out, solver=CLEAR).width > 100 * face_leak(
         value, w_out
     )

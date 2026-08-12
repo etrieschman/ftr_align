@@ -1,4 +1,17 @@
-"""
+"""The five-node network of the attribution memo (``fig_texas5``).
+
+Nodes W (western renewables), N (northern renewables), S (southern thermal and
+storage), H (eastern load), D (a central data centre / microgrid).  Every
+peripheral node connects to D, with additional corridors WN, WS, NH, SH.
+
+Three structures the 3-node cannot show:
+
+* the **parallel WD pair** -- identical PTDF rows, so mu trades freely between
+  them and ``Lambda*(b;y)`` is genuinely non-singleton;
+* the **WN / SH pair** -- priced together but carrying no circulation between
+  them, so their attributed values are individually identified;
+* the **SDH triangle** -- a circulation, so if it also preserves the
+  limit-weighted value only the joint attribution is identified.
 """
 from __future__ import annotations
 

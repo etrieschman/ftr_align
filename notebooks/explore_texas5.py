@@ -8,19 +8,18 @@ from itertools import product
 from ftr_align import SupportProblem, NetworkModel, Contingency
 from ftr_align.solve import Lambda
 from ftr_align.duality import (
+    J_star,
     attribution_blocks,
+    block_totals,
     connected_blocks,
-    classify,
-    marginal_repair,
     robust_bounds,
-    J_star_from_bounds,
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import EPS
-from ftr_align.cases import toy_degen
-from ftr_align.cases.toy_degen import WN, WS, WD1, WD2, ND, NH, SD, SH, DH
-from ftr_align.cases.toy_degen import W, N, S, D, H
+from ftr_align.metrics import EPS, block_table
+from ftr_align.cases import texas5
+from ftr_align.cases.texas5 import WN, WS, WD1, WD2, ND, NH, SD, SH, DH
+from ftr_align.cases.texas5 import W, N, S, D, H
 
 CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
 
@@ -33,7 +32,7 @@ np.set_printoptions(precision=3, suppress=True)
 # -------------------------------------
 # INSPECT NETWORK
 # -------------------------------------
-net = toy_degen.NETWORK
+net = texas5.NETWORK
 H = net.ptdf()
 n = net.n_nodes
 ell = net.n_elements
@@ -237,6 +236,8 @@ for name, pattern in PATTERNS.items():
         .sort("constraint")
     )
 
-    display(attribution_blocks(support_problem))
+    blocks = attribution_blocks(support_problem)
+    display(block_table(model, blocks,
+                        block_totals(support_problem.data.b, solution.mu, blocks)))
 
 # %%

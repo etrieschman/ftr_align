@@ -3,8 +3,10 @@
 Given a direction ``d``, the optimal dual face ``Lambda*(b;y)`` is the set of
 certificates attaining the support value.  It need not be a singleton, so
 per-constraint multipliers are characterised by *robust ranges* ``[mu_lo,
-mu_hi]`` over the face -- invariant to which dual optimum a solver returns --
-which classify each row binding / degenerate / slack.
+mu_hi]`` over the face -- invariant to which dual optimum a solver returns.
+
+Everything here returns numpy or plain values.  Anything that formats results for
+a reader (labels, tables) lives in ``metrics``.
 
 Over the dual-optimal support ``J*(b;y)`` we build the trade space
 ``D(b;y) = ker C(b;y)`` (weight shifts that change neither the aggregate
@@ -15,23 +17,19 @@ matroid-connectivity attribution blocks with face-invariant totals ``W_{J_r}``.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 import cvxpy as cp
 import numpy as np
-import polars as pl
-from scipy.linalg import null_space, qr
+from scipy.linalg import null_space, orth, qr
 
-from .network import NetworkModel, align, contingency_label, element_label
-from .solve import Lambda_star, SupportProblem, network_constraints, support_objective
+from .network import NetworkModel, align
+from .solve import Lambda_star, SupportProblem, network_constraints
 
 FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
-CLASS_TOL = 1e-4  # zero threshold for classification; must exceed FACE_TOL leak
+SUPPORT_TOL = 1e-4  # mu > tol decides membership of J*; must exceed FACE_TOL leak
 RANK_TOL = 1e-7  # numerical zero for rank / nullspace
-SPAN_TOL = 1e-8  # relative least-squares residual for in_span membership
-NET_DUAL_TOL = 0.5  # drop sub-dollar net duals from the reported table
-
-Classification = Literal["binding", "degenerate", "slack"]
+SPAN_TOL = 1e-8  # relative residual for in_span membership
 
 
 def robust_bounds(
@@ -42,9 +40,10 @@ def robust_bounds(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face ``Lambda*(b;y)`` --
     the robust multiplier range, invariant to which dual optimum a solver
-    returns.  Rows outside the support get ``(0, 0)``; classify with
-    :func:`classify`.  ``hi_only`` skips the ``mu_lo`` solves (e.g. when the
-    support alone is wanted -- though :func:`J_star` is the cheaper way there).
+    returns.  Rows outside the support get ``(0, 0)``.  ``hi_only`` skips the
+    ``mu_lo`` solves; note that the *support* alone is far cheaper from
+    :func:`J_star` (one interior-point solve), so reach for this only when the
+    ranges themselves are wanted.
 
     Two exact accelerations: (1) ``mu`` ranges only over rows binding at the
     primal optimum, since by complementary slackness every other row is 0 across
@@ -108,7 +107,7 @@ def robust_bounds(
     return lo, hi
 
 
-class FaceRange(NamedTuple):
+class PrimalFaceRange(NamedTuple):
     """Range of a linear functional over the primal optimal face, with an
     optimizer at each end."""
 
@@ -126,21 +125,21 @@ class FaceRange(NamedTuple):
 
 
 def face_leak(value: float, weights: np.ndarray, tol: float = FACE_TOL) -> float:
-    """The numerical width :func:`primal_face` reports for a face that is really
+    """The numerical width :func:`primal_face_range` reports for a face that is really
     a single point: the optimal-value cut is relaxed by ``tol * max(1, |value|)``,
     and a functional of size ``||weights||`` reads that slack as range.
 
     A caller deciding *invariant vs unidentified* must exceed this, the same way
-    ``CLASS_TOL`` must exceed ``FACE_TOL`` for the dual-side bounds."""
+    ``SUPPORT_TOL`` must exceed ``FACE_TOL`` for the dual-side bounds."""
     return tol * max(1.0, abs(value)) * float(np.linalg.norm(weights))
 
 
-def primal_face(
+def primal_face_range(
     problem: SupportProblem,
     weights: np.ndarray,
     solver=None,
     tol: float = FACE_TOL,
-) -> FaceRange:
+) -> PrimalFaceRange:
     """Range of ``weights^T q`` over the **primal** optimal face
     ``argmax_{q in Q(b)} d^T q`` -- the mirror of :func:`robust_bounds`, which
     ranges over the dual face.
@@ -187,12 +186,19 @@ def primal_face(
         q_end = np.asarray(q.value, dtype=float)
         ends.append((float(weights @ q_end), q_end))
     (hi, q_hi), (lo, q_lo) = ends
-    return FaceRange(lo=lo, hi=hi, q_lo=q_lo, q_hi=q_hi)
+    return PrimalFaceRange(lo=lo, hi=hi, q_lo=q_lo, q_hi=q_hi)
 
 
 def in_span(rows: np.ndarray, target: np.ndarray, tol: float = SPAN_TOL) -> bool:
-    """Whether ``target`` lies in the span of the rows of ``rows``, by
-    least-squares residual (relative to ``target``'s norm).
+    """Whether ``target`` lies in the span of the rows of ``rows``.
+
+    Computed by projecting onto an orthonormal basis of that span (SVD) and
+    measuring the relative residual ``||target - P target|| / ||target||``.
+    Least squares would answer the same question, but its tolerance knob
+    (``rcond``) controls rank truncation rather than the membership test we
+    actually want, so the residual it reports is only implicitly the distance to
+    the subspace.  Projecting makes the quantity being thresholded the literal
+    distance, which is the number ``tol`` should govern.
 
     The shared engine for both invariance conditions:
 
@@ -202,43 +208,27 @@ def in_span(rows: np.ndarray, target: np.ndarray, tol: float = SPAN_TOL) -> bool
     * ``prop:primal_invariance`` -- the block share ``U_B`` is independent of the
       intersection optimum iff ``sum_{i in B} mu_i k_i`` lies in
       ``span{1} + row(K_{J*(f^g;y)})``, i.e. ``in_span(vstack([ones, K_J]), w)``.
+
+    (The first is equivalently ``b_S _|_ ker C``, testable against the
+    :func:`trade_space` basis already computed for the blocks; both readings agree
+    because ``(ker C)^perp = rowspace C``.)
     """
     rows = np.atleast_2d(np.asarray(rows, dtype=float))
     target = np.asarray(target, dtype=float)
-    scale = max(float(np.linalg.norm(target)), 1.0)
+    norm = float(np.linalg.norm(target))
+    if norm == 0.0:
+        return True
     if rows.size == 0:
-        return bool(np.linalg.norm(target) <= tol * scale)
-    coef, *_ = np.linalg.lstsq(rows.T, target, rcond=None)
-    return bool(np.linalg.norm(rows.T @ coef - target) <= tol * scale)
+        return False
+    basis = orth(rows.T)  # orthonormal basis of the span of the rows
+    residual = target - basis @ (basis.T @ target)
+    return bool(np.linalg.norm(residual) <= tol * norm)
 
 
-def classify(
-    lo: np.ndarray, hi: np.ndarray, tol: float = CLASS_TOL
-) -> list[Classification]:
-    """Robust constraint classification (Prop. 4).  ``tol`` must exceed the
-    face's numerical leakage (``FACE_TOL``)."""
-    out: list[Classification] = []
-    for low, high in zip(lo, hi):
-        if low > tol:
-            out.append("binding")
-        elif high > tol:
-            out.append("degenerate")
-        else:
-            out.append("slack")
-    return out
-
-
-def J_star_from_bounds(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
-    """``J*(b;y)`` read off a :func:`robust_bounds` ``hi`` vector: rows carrying
-    positive weight in some optimal certificate (``mu_hi > 0``) -- binding or
-    degenerate.  Only these carry attribution."""
-    return np.where(hi > tol)[0]
-
-
-def J_star(problem: SupportProblem, tol: float = CLASS_TOL) -> np.ndarray:
+def J_star(problem: SupportProblem, tol: float = SUPPORT_TOL) -> np.ndarray:
     """``J*(b;y)``, the dual-optimal support, from a single interior-point solve
     -- ~100x cheaper than the :func:`robust_bounds` face-LP loop, which is needed
-    only for the lo/hi ranges (:func:`classify`).
+    only when the lo/hi *ranges* themselves are wanted.
 
     By Goldman-Tucker strict complementarity an interior-point method converges
     to the analytic center of the optimal dual face, whose support is *exactly*
@@ -247,27 +237,6 @@ def J_star(problem: SupportProblem, tol: float = CLASS_TOL) -> np.ndarray:
     strict subset of ``J*`` (it misses degenerate rows)."""
     mu = problem.solve(solver={"solver": "CLARABEL"}).mu
     return np.where(mu > tol)[0]
-
-
-def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
-    """Collapse stacked ``mu`` to a signed net dual per (contingency, element):
-    ``mu_upper - mu_lower``.  Rows with ~zero net are dropped."""
-    names = model.network.element_names
-    records = []
-    for c in model.contingencies:
-        net = mu[model.rows_upper(c.key)] - mu[model.rows_lower(c.key)]
-        for e in range(model.ell):
-            if abs(net[e]) > NET_DUAL_TOL:
-                records.append(
-                    {
-                        "contingency": contingency_label(c.key, names),
-                        "element": element_label(names, e),
-                        "mu": float(net[e]),
-                    }
-                )
-    return pl.DataFrame(
-        records, schema={"contingency": pl.Utf8, "element": pl.Utf8, "mu": pl.Float64}
-    )
 
 
 # ----------------------------------------------------------------------------
@@ -330,143 +299,29 @@ def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
 
 
 def attribution_blocks(
-    problem: SupportProblem,
-    mu: np.ndarray | None = None,
-    index: np.ndarray | None = None,
-    solver=None,
-) -> pl.DataFrame:
-    """Attribution blocks over the support with per-block totals
-    ``W_{J_r} = sum_{i in J_r} b_i mu_i`` (invariant across the optimal face).
+    problem: SupportProblem, index: np.ndarray | None = None
+) -> list[np.ndarray]:
+    """Attribution blocks ``{J_r}`` (``prop:blocks``) as **global row indices**:
+    the finest partition of ``J*(b;y)`` along which ``D = ker C`` splits as a
+    direct sum, and hence the finest units carrying an invariant attributed value.
 
-    The support ``index = J*(b;y)`` defaults to :func:`J_star` (one CLARABEL
-    solve); pass a precomputed ``index`` to reuse it.  ``mu`` defaults to a support
-    solve on ``solver`` (any optimal dual works -- ``W`` is face-invariant)."""
-    if mu is None:
-        mu = problem.solve(solver=solver).mu
+    Orchestration only -- ``J*`` (one CLARABEL solve), then ``C``, then the
+    matroid components of :func:`connected_blocks`, whose column positions are
+    mapped back to rows of ``K``.  Pass a precomputed ``index`` to reuse a support
+    you already have.  Reporting lives in ``metrics.block_table``."""
     if index is None:
         index = J_star(problem)  # CLARABEL: support via strict complementarity
-    blocks = connected_blocks(trade_matrix(problem, index))
-
-    labels = problem.model.labels()
-    b = problem.data.b
-    records = []
-    for r, cols in enumerate(blocks):
-        rows = [int(index[c]) for c in cols]
-        members = []
-        for i in rows:
-            row = labels.row(i, named=True)
-            members.append(f"{row['contingency']}:{row['element']}:{row['side']}")
-        W = float(sum(b[i] * mu[i] for i in rows))
-        records.append(
-            {"block": r, "members": members, "rows": rows, "size": len(rows), "W": W}
-        )
-    return pl.DataFrame(
-        records,
-        schema={
-            "block": pl.Int64,
-            "members": pl.List(pl.Utf8),
-            "rows": pl.List(pl.Int64),
-            "size": pl.Int64,
-            "W": pl.Float64,
-        },
-    )
+    cols = connected_blocks(trade_matrix(problem, index))
+    return [np.asarray([int(index[c]) for c in group]) for group in cols]
 
 
-def discrepancy(f: NetworkModel, g: NetworkModel) -> dict[str, np.ndarray]:
-    """Rows where the FTR model ``f`` and the DAM model ``g`` disagree, split by
-    kind and by the failure mode each feeds (``prop:kinds``).  Aligned internally.
+def block_totals(
+    b: np.ndarray, mu: np.ndarray, blocks: list[np.ndarray]
+) -> np.ndarray:
+    """Per-block attributed value ``W_{J_r} = sum_{i in J_r} b_i mu_i``
+    (``cor:block_value_invariance``).
 
-    A row disagrees in exactly one of two ways.  A *level* difference has both
-    limits finite with ``f_i = alpha_i g_i``, ``alpha_i != 1``; a *coverage*
-    difference has one model at ``+inf`` (unmonitored, hence looser than any
-    finite limit).  Either way the looser model is the one that loses value on
-    adopting the intersection, so ``f_i > g_i`` feeds ``U`` and ``f_i < g_i``
-    feeds ``V``.
-
-    Only level differences carry a nonzero floor (``cor:diagnosable``): an
-    infinite limit forces ``mu_i = 0``, so a coverage difference's whole
-    contribution is displaced value registered at other rows.
-    """
-    f_u, g_u = align(f, g)
-    bf, bg = f_u.b, g_u.b
-    both_finite = np.isfinite(bf) & np.isfinite(bg)
-    return {
-        "level_U": np.where(both_finite & (bf > bg))[0],
-        "level_V": np.where(both_finite & (bf < bg))[0],
-        "coverage_U": np.where(~both_finite & (bf > bg))[0],
-        "coverage_V": np.where(~both_finite & (bf < bg))[0],
-    }
-
-
-_REPAIR_SCHEMA = {
-    "driver": pl.Utf8,
-    "members": pl.List(pl.Utf8),
-    "idxs": pl.List(pl.Int64),
-    "repair_idxs": pl.List(pl.Int64),
-    "repair": pl.Float64,
-}
-
-
-def marginal_repair(
-    f: NetworkModel, g: NetworkModel, direction: np.ndarray, solver=None
-) -> pl.DataFrame:
-    """Standalone block-repair counterfactual (pitch sec. 3.2): for each gap
-    block, the change in ``Delta = h(f;y) - h(g;y)`` from repairing **only** that
-    block's differing rows (``f`` -> ``g``), measured from the original ``f``.
-
-    Diagnostic, **not additive**: when both failure modes are present they
-    interact (one block can mask another), so the marginal repairs do not sum to
-    the gap (``prop:repair_nonadditive``).
-
-    NOTE: this repairs toward ``g``, not toward the intersection ``f ^ g``, so it
-    is *not* the memo's ``U^(S)``, whose monotonicity relies on the one-signed
-    target.  Retargeting waits on ``meet``."""
-    f_u, bf, bg, blocks = _repair_blocks(f, g, direction, solver)
-    h_f = SupportProblem(f_u, direction).solve(solver=solver).value
-
-    def reduction(rows: list[int]) -> float:
-        repaired = replace(f_u, b=_with(bf, rows, bg))
-        return h_f - SupportProblem(repaired, direction).solve(solver=solver).value
-
-    records = [{**blk, "repair": reduction(blk["repair_idxs"])} for blk in blocks]
-    return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
-
-
-def _repair_blocks(
-    f: NetworkModel, g: NetworkModel, direction: np.ndarray, solver
-) -> tuple[NetworkModel, np.ndarray, np.ndarray, list[dict]]:
-    """Aligned ``f_u`` (plus its limits ``bf`` and the DAM limits ``bg``) and the
-    gap's repair blocks across both failure modes.  Each block is an attribution
-    block of the relevant support whose differing rows (``repair_idxs``) move the
-    FTR model toward the DAM model.  Blocks with no differing rows are dropped.
-
-    NOTE: ``U`` blocks are taken from the ``g`` support here, but
-    ``prop:block_underfunding`` decomposes ``U`` over the blocks of ``f`` (and
-    ``V`` over those of ``g``).  Reconciling that is step-3 work, not a rename."""
-    f_u, g_u = align(f, g)
-    bf, bg = f_u.b, g_u.b
-    blocks = []
-    for driver, model, differs in (
-        ("underfunding", g_u, bf > bg),
-        ("hedging", f_u, bf < bg),
-    ):
-        bl = attribution_blocks(SupportProblem(model, direction), solver=solver)
-        for blk in bl.rows(named=True):
-            repair_rows = [r for r in blk["rows"] if differs[r]]
-            if repair_rows:
-                blocks.append(
-                    {
-                        "driver": driver,
-                        "members": blk["members"],
-                        "idxs": blk["rows"],
-                        "repair_idxs": repair_rows,
-                    }
-                )
-    return f_u, bf, bg, blocks
-
-
-def _with(b: np.ndarray, rows: list[int], source: np.ndarray) -> np.ndarray:
-    """Copy of ``b`` with ``rows`` overwritten by ``source`` (the DAM limits)."""
-    out = b.copy()
-    out[rows] = source[rows]
-    return out
+    Constant across the optimal dual face, so any optimal ``mu`` gives the same
+    answer -- that invariance is the whole point of grouping to blocks, and it is
+    what makes these totals reportable when the individual ``mu_i`` are not."""
+    return np.array([float(b[rows] @ mu[rows]) for rows in blocks])

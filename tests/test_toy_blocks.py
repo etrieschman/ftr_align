@@ -10,13 +10,13 @@ block total.
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, align, clear_dam
+from ftr_align import SupportProblem, align, clear_dam, meet
+from ftr_align.attribution import repair_value
 from ftr_align.duality import (
-    J_star_from_bounds,
+    J_star,
     attribution_blocks,
-    classify,
+    block_totals,
     connected_blocks,
-    marginal_repair,
     robust_bounds,
     trade_matrix,
     trade_space,
@@ -35,17 +35,21 @@ def _gap(f, g, scenario="(a)"):
     return delta, d
 
 
-def test_marginal_repair_additive_only_for_single_driver():
-    """With one failure mode present the marginal repair recovers Δ; with both
-    present the marginals mask one another and do NOT sum to Δ
-    (prop:repair_nonadditive)."""
-    f, g = toy.MODELS["dam_outage"]                # U only
-    delta, d = _gap(f, g)
-    assert marginal_repair(f, g, d, solver=CLEAR)["repair"].sum() == pytest.approx(delta, abs=2)
+def test_full_repair_recovers_the_whole_failure_mode():
+    """prop:repair_basic -- U^(full index) == U, for every case."""
+    from ftr_align import failure_modes
 
-    f, g = toy.MODELS["mixed"]                     # U and V -> masking
-    delta, d = _gap(f, g)
-    assert abs(marginal_repair(f, g, d, solver=CLEAR)["repair"].sum() - delta) > 1.0
+    for case in toy.MODELS:
+        f, g = toy.MODELS[case]
+        _, d = _gap(f, g)
+        modes = failure_modes(f, g, d, solver=CLEAR)
+        every_row = np.arange(len(meet(f, g).b))
+        assert repair_value(f, g, d, every_row, mode="U", solver=CLEAR) == pytest.approx(
+            modes["U"], abs=1e-3
+        )
+        assert repair_value(f, g, d, every_row, mode="V", solver=CLEAR) == pytest.approx(
+            modes["V"], abs=1e-3
+        )
 
 
 def test_redundant_face_and_trade():
@@ -59,12 +63,12 @@ def test_redundant_face_and_trade():
     assert prob.solve(solver=CLEAR).value == pytest.approx(32625, abs=2)
 
     lo, hi = robust_bounds(prob, solver=CLEAR)
-    index = J_star_from_bounds(hi)
-    klass = classify(lo, hi)
-    # exactly the two SLa/SLb upper rows carry the support, both degenerate
+    index = J_star(prob)
+    # exactly the two SLa/SLb upper rows carry the support, and both are
+    # *degenerate*: each can take the whole weight or none of it.
     assert index.tolist() == [sys.rows_upper(None)[0], sys.rows_upper(None)[1]]
-    assert all(klass[i] == "degenerate" for i in index)
     assert all(lo[i] == pytest.approx(0, abs=1e-3) for i in index)
+    assert all(hi[i] > 1.0 for i in index)
 
     # 1-D trade space, the (1, -1) weight shift between the twins
     C = trade_matrix(prob, index)
@@ -78,10 +82,12 @@ def test_redundant_face_and_trade():
 def test_redundant_single_block():
     sys = toy.REDUNDANT_MODELS["derate"][1]
     dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
-    blocks = attribution_blocks(SupportProblem(sys, dam.direction), solver=CLEAR)
-    assert blocks.height == 1
-    assert blocks["size"][0] == 2
-    assert blocks["W"][0] == pytest.approx(32625, abs=2)
+    prob = SupportProblem(sys, dam.direction)
+    blocks = attribution_blocks(prob)
+    assert len(blocks) == 1
+    assert len(blocks[0]) == 2
+    W = block_totals(prob.data.b, prob.solve(solver=CLEAR).mu, blocks)
+    assert W[0] == pytest.approx(32625, abs=2)
 
 
 def test_block_total_is_face_invariant():
@@ -97,8 +103,9 @@ def test_block_total_is_face_invariant():
     # the split genuinely differs between solvers...
     assert not np.allclose(mu_clarabel[sl], mu_highs[sl], atol=1.0)
 
-    w_clarabel = attribution_blocks(prob, mu=mu_clarabel, solver=CLEAR)["W"][0]
-    w_highs = attribution_blocks(prob, mu=mu_highs, solver=CLEAR)["W"][0]
+    blocks = attribution_blocks(prob)
+    w_clarabel = block_totals(prob.data.b, mu_clarabel, blocks)[0]
+    w_highs = block_totals(prob.data.b, mu_highs, blocks)[0]
     # ...but the block total does not
     assert w_clarabel == pytest.approx(w_highs, abs=2)
 
@@ -110,11 +117,11 @@ def test_unique_dual_gives_singletons():
     dam = clear_dam(g_model, toy.SCENARIOS["(a)"], solver=CLEAR)
     prob = SupportProblem(g_model, dam.direction)
 
-    _, hi = robust_bounds(prob, solver=CLEAR)
-    index = J_star_from_bounds(hi)
+    index = J_star(prob)
     C = trade_matrix(prob, index)
     assert trade_space(C).shape[1] == 0          # no trades
     assert all(len(g) == 1 for g in connected_blocks(C))  # all singletons
 
-    blocks = attribution_blocks(prob, solver=CLEAR)
-    assert blocks["W"].sum() == pytest.approx(prob.solve(solver=CLEAR).value, abs=2)
+    blocks = attribution_blocks(prob, index=index)
+    W = block_totals(prob.data.b, prob.solve(solver=CLEAR).mu, blocks)
+    assert W.sum() == pytest.approx(prob.solve(solver=CLEAR).value, abs=2)

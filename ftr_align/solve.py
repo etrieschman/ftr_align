@@ -57,20 +57,13 @@ def Lambda(K, mu, s, direction):
 
 def Lambda_star(K, b, mu, s, direction, value, tol):
     """Constraints defining the optimal dual face ``Lambda*(b; y)``: dual
-    feasibility capped by the optimal value, ``{b^T mu == value}`` to within
-    ``tol``.
+    feasibility capped by the optimal value, ``b^T mu <= value + tol``.
 
-    The cap is a razor-thin slab, so problems built on this must be solved with
-    simplex (HiGHS) and pinned to a ``value`` from the same engine."""
-    return Lambda(K, mu, s, direction) + [
-        support_objective(b, mu) <= value + tol,
-        support_objective(b, mu) >= value - tol,
-    ]
-
-
-def support_objective(b, mu):
-    """Dual support objective ``b^T mu``."""
-    return b @ mu
+    The cap is one-sided because weak duality already gives ``b^T mu >= value``
+    for every dual-feasible point.  It is still a razor-thin slab, so problems
+    built on this must be solved with simplex (HiGHS) and pinned to a ``value``
+    from the same engine."""
+    return Lambda(K, mu, s, direction) + [b @ mu <= value + tol]
 
 
 def network_constraints(K, b, q):
@@ -136,7 +129,7 @@ def solve_support_cvxpy(
     constraints = Lambda(data.K, mu, s, data.direction)
     if (~active).any():
         constraints.append(mu[~active] == 0)
-    objective = cp.Minimize(support_objective(data.b[active], mu[active]))
+    objective = cp.Minimize(data.b[active] @ mu[active])
     cp.Problem(objective, constraints).solve(**opts)
 
     mu_value = np.asarray(mu.value, dtype=float)
@@ -195,27 +188,24 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
     ``y*`` is non-unique and an interior-point solver
     (``{"solver": "CLARABEL"}``) returns the analytic-center certificate.
     """
-    net = model.network
+    active = model.active
     q_gen = cp.Variable(inst.M_gen.shape[1], name="q_gen")
-    q = cp.Variable(net.n_nodes, name="q")
-    inj = inst.M_gen @ q_gen - inst.M_dem @ inst.q_dem
-    constraints = [
-        q == inj,
-        cp.sum(q) == 0,
-        q_gen >= inst.min_gen,
-        q_gen <= inst.max_gen,
-    ]
+    q = cp.Variable(model.network.n_nodes, name="q")
 
-    upper, lower, H = {}, {}, {}
-    for c in model.contingencies:
-        if not np.isfinite(c.upper).any() and not np.isfinite(c.lower).any():
-            continue  # unmonitored contingency (e.g. inf limits after align)
-        H[c.key] = net.ptdf(c.key)
-        flow = H[c.key] @ q
-        upper[c.key], lower[c.key] = flow <= c.upper, -flow <= c.lower
-        constraints += [upper[c.key], lower[c.key]]
-
-    problem = cp.Problem(cp.Minimize(inst.p_gen @ q_gen), constraints)
+    # The same primal network block the support problem uses.  Keeping it stacked
+    # (rather than one cvxpy constraint per contingency) means the dual of the
+    # single `K q <= b` row block *is* the certificate y, already in stacked row
+    # order -- no per-contingency scatter, and no second spelling of feasibility.
+    network = network_constraints(model.K[active], model.b[active], q)
+    problem = cp.Problem(
+        cp.Minimize(inst.p_gen @ q_gen),
+        [
+            q == inst.M_gen @ q_gen - inst.M_dem @ inst.q_dem,
+            q_gen >= inst.min_gen,
+            q_gen <= inst.max_gen,
+            *network,
+        ],
+    )
     problem.solve(**(solver or {}))
     if q.value is None:
         raise ValueError(
@@ -226,19 +216,15 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
 
     q_value = np.asarray(q.value, dtype=float)
     y = np.zeros(model.n_rows)
-    merch = 0.0
-    for key in upper:
-        mu_u = np.asarray(upper[key].dual_value, dtype=float)
-        mu_l = np.asarray(lower[key].dual_value, dtype=float)
-        y[model.rows_upper(key)] = mu_u
-        y[model.rows_lower(key)] = mu_l
-        merch += (mu_u - mu_l) @ (H[key] @ q_value)
+    y[active] = np.asarray(network[0].dual_value, dtype=float)
 
     return DamResult(
         value=float(problem.value),
         q=q_value,
         y=y,
         direction=model.K.T @ y,
-        merch_surp=float(merch),
+        # MS = y^T K q; the stacked form folds the usual (mu_up - mu_lo)^T H q,
+        # since K = [H; -H] carries the sign.
+        merch_surp=float(y @ (model.K @ q_value)),
         status=str(problem.status),
     )

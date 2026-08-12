@@ -3,19 +3,28 @@ import numpy as np
 import polars as pl
 
 from ftr_align import SupportProblem, clear_dam, dual_summary
+from ftr_align.attribution import block_shares, failure_modes
 from ftr_align.duality import (
+    J_star,
     attribution_blocks,
-    classify,
-    marginal_repair,
+    block_totals,
     robust_bounds,
-    J_star_from_bounds,
     trade_matrix,
     trade_space,
 )
+from ftr_align.metrics import block_table
 from ftr_align.metrics import EPS
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
+
+def show_blocks(problem, model, mu=None, index=None, solver=CLEAR):
+    """Blocks with their attributed value W_{J_r}: compute in duality, label in
+    metrics."""
+    mu = problem.solve(solver=solver).mu if mu is None else mu
+    blocks = attribution_blocks(problem, index=index)
+    return block_table(model, blocks, block_totals(problem.data.b, mu, blocks))
+
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
@@ -111,37 +120,38 @@ ftr_prob = SupportProblem(f_model, dam.direction)
 
 # DAM model
 lo, hi = robust_bounds(dam_prob, solver=CLEAR)
-index = J_star_from_bounds(hi)
-klass = classify(lo, hi)
+index = J_star(dam_prob)
 C = trade_matrix(dam_prob, index)
 D = trade_space(C)
 print("~~~~~~~~ DAM model")
 print("DAM support value:", round(dam_prob.solve(solver=CLEAR).value, 1))
 print("DAM support rows :", index.tolist())
-print("DAM classes      :", [klass[i] for i in index])
+print("DAM mu ranges    :", [(round(lo[i], 1), round(hi[i], 1)) for i in index])
 print("DAM trade space dim:", D.shape[1])
-display(attribution_blocks(dam_prob, solver=CLEAR))
+display(show_blocks(dam_prob, g_model, index=index))
 
 
 # FTR model
 lo, hi = robust_bounds(ftr_prob, solver=CLEAR)
-index = J_star_from_bounds(hi)
-klass = classify(lo, hi)
+index = J_star(ftr_prob)
 C = trade_matrix(ftr_prob, index)
 D = trade_space(C)
 print("\n~~~~~~~~ FTR model")
 print("FTR support value:", round(ftr_prob.solve(solver=CLEAR).value, 1))
 print("FTR support rows :", index.tolist())
-print("FTR classes      :", [klass[i] for i in index])
+print("FTR mu ranges    :", [(round(lo[i], 1), round(hi[i], 1)) for i in index])
 print("FTR trade space dim:", D.shape[1])
-display(attribution_blocks(ftr_prob, solver=CLEAR))
+display(show_blocks(ftr_prob, f_model, index=index))
 
 
-# Repair: per-block attribution of the gap Δ(f,g;y) = h(f;y) - h(g;y).  Each
-# block's standalone effect -- not additive when the two failure modes mask each
-# other (prop:repair_nonadditive).
+# Failure modes and their block-level attribution.  U decomposes over the blocks
+# of the FTR support problem, V over those of the DAM one (prop:block_underfunding).
 d = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CLEAR).direction
-print("\n~~~~~~~~ Repair of gap")
-marginal_repair(f_model, g_model, d, solver=CLEAR)
+print("\n~~~~~~~~ Failure modes")
+print(failure_modes(f_model, g_model, d, solver=CLEAR))
+for mode, model in (("U", f_model), ("V", g_model)):
+    blocks, shares = block_shares(f_model, g_model, d, mode=mode, solver=CLEAR)
+    print(f"\n{mode} by block")
+    display(block_table(model, blocks, shares, value_name=mode))
 
 # %%
