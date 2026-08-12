@@ -15,7 +15,7 @@ matroid-connectivity attribution blocks with face-invariant totals ``W_{J_r}``.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import cvxpy as cp
 import numpy as np
@@ -23,11 +23,12 @@ import polars as pl
 from scipy.linalg import null_space, qr
 
 from .network import NetworkModel, align, contingency_label, element_label
-from .solve import Lambda_star, SupportProblem, support_objective
+from .solve import Lambda_star, SupportProblem, network_constraints, support_objective
 
 FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
 CLASS_TOL = 1e-4  # zero threshold for classification; must exceed FACE_TOL leak
 RANK_TOL = 1e-7  # numerical zero for rank / nullspace
+SPAN_TOL = 1e-8  # relative least-squares residual for in_span membership
 NET_DUAL_TOL = 0.5  # drop sub-dollar net duals from the reported table
 
 Classification = Literal["binding", "degenerate", "slack"]
@@ -105,6 +106,110 @@ def robust_bounds(
             lo[i] = mu.value[j]
         e[j] = 0.0
     return lo, hi
+
+
+class FaceRange(NamedTuple):
+    """Range of a linear functional over the primal optimal face, with an
+    optimizer at each end."""
+
+    lo: float
+    hi: float
+    q_lo: np.ndarray
+    q_hi: np.ndarray
+
+    @property
+    def width(self) -> float:
+        """``hi - lo``.  Compare against :func:`face_leak`, never against a bare
+        absolute tolerance -- the face is constructed with slack, so ``width``
+        is never exactly zero."""
+        return self.hi - self.lo
+
+
+def face_leak(value: float, weights: np.ndarray, tol: float = FACE_TOL) -> float:
+    """The numerical width :func:`primal_face` reports for a face that is really
+    a single point: the optimal-value cut is relaxed by ``tol * max(1, |value|)``,
+    and a functional of size ``||weights||`` reads that slack as range.
+
+    A caller deciding *invariant vs unidentified* must exceed this, the same way
+    ``CLASS_TOL`` must exceed ``FACE_TOL`` for the dual-side bounds."""
+    return tol * max(1.0, abs(value)) * float(np.linalg.norm(weights))
+
+
+def primal_face(
+    problem: SupportProblem,
+    weights: np.ndarray,
+    solver=None,
+    tol: float = FACE_TOL,
+) -> FaceRange:
+    """Range of ``weights^T q`` over the **primal** optimal face
+    ``argmax_{q in Q(b)} d^T q`` -- the mirror of :func:`robust_bounds`, which
+    ranges over the dual face.
+
+    Two uses, both from ``prop:primal_invariance``.  The block share
+    ``U_B = sum_{i in B} mu_i [f_i - (Kq)_i]`` is *affine* in the intersection
+    optimum ``q^``, with coefficient vector ``w = sum_{i in B} mu_i k_i``, so
+    passing that ``w`` gives exactly the range over which ``U_B`` is unidentified
+    (``lo == hi`` iff the block share is invariant).  And ``q_lo``/``q_hi`` are
+    two genuinely distinct optima, which is what lets the invariance *condition*
+    be tested against observed behaviour rather than assumed.
+
+    Like :func:`robust_bounds` this **runs on HiGHS internally**: the optimal-face
+    cut is a razor-thin slab that simplex handles exactly while an interior-point
+    method finds no strict interior, and the cut is pinned to a value from the
+    base solve, so the two must share an engine.  The cut is one-sided
+    (``d^T q >= value - tol``) because primal feasibility already gives
+    ``d^T q <= value``.  ``tol`` is relative to the support value, which runs to
+    ``1e4``-plus even on the toy.
+
+    That relaxation leaks: a point face reports a width of order
+    :func:`face_leak`, not zero.  Test ``width`` against that, never against a
+    bare absolute tolerance.
+    """
+    opts = solver if isinstance(solver, dict) else {}
+    lp_opts = {**opts, "solver": "HIGHS"}
+    data = problem.data
+    active = data.active
+    value = problem.solve(solver=lp_opts).value
+    slack = tol * max(1.0, abs(value))
+
+    weights = np.asarray(weights, dtype=float)
+    q = cp.Variable(data.K.shape[1], name="q")
+    face = network_constraints(data.K[active], data.b[active], q) + [
+        data.direction @ q >= value - slack
+    ]
+    w = cp.Parameter(data.K.shape[1], name="w")
+    face_prob = cp.Problem(cp.Maximize(w @ q), face)
+
+    ends = []
+    for sense in (1.0, -1.0):  # maximize, then minimize
+        w.value = sense * weights
+        face_prob.solve(**lp_opts)
+        q_end = np.asarray(q.value, dtype=float)
+        ends.append((float(weights @ q_end), q_end))
+    (hi, q_hi), (lo, q_lo) = ends
+    return FaceRange(lo=lo, hi=hi, q_lo=q_lo, q_hi=q_hi)
+
+
+def in_span(rows: np.ndarray, target: np.ndarray, tol: float = SPAN_TOL) -> bool:
+    """Whether ``target`` lies in the span of the rows of ``rows``, by
+    least-squares residual (relative to ``target``'s norm).
+
+    The shared engine for both invariance conditions:
+
+    * ``prop:invariant_subset`` -- the total ``W_S`` is certified iff
+      ``b_S in rowspace C(b;y)``, i.e. ``in_span(C, b_S)``, with ``b_S`` indexed
+      by *position within* ``J*(b;y)``, not by global row.
+    * ``prop:primal_invariance`` -- the block share ``U_B`` is independent of the
+      intersection optimum iff ``sum_{i in B} mu_i k_i`` lies in
+      ``span{1} + row(K_{J*(f^g;y)})``, i.e. ``in_span(vstack([ones, K_J]), w)``.
+    """
+    rows = np.atleast_2d(np.asarray(rows, dtype=float))
+    target = np.asarray(target, dtype=float)
+    scale = max(float(np.linalg.norm(target)), 1.0)
+    if rows.size == 0:
+        return bool(np.linalg.norm(target) <= tol * scale)
+    coef, *_ = np.linalg.lstsq(rows.T, target, rcond=None)
+    return bool(np.linalg.norm(rows.T @ coef - target) <= tol * scale)
 
 
 def classify(

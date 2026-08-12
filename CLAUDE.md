@@ -171,6 +171,40 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
   one-signed target). `_repair_blocks` also takes `U` blocks from the `g` support,
   where `prop:block_underfunding` uses the blocks of `f`. Both reconciled in
   step 3, not in the rename.
+- **Step 2 primitives (`tests/test_primitives.py`, 27 tests):** `meet(f, g)` in
+  `network.py`; `primal_face(problem, weights) -> FaceRange` and `in_span` in
+  `duality.py`. `meet` guards Assumption 1 explicitly (`np.allclose(K_f, K_g)`)
+  and raises `NotImplementedError` naming the stack fallback — that guard is
+  where the ERCOT branch goes.
+
+### Two findings from step 2 (both change how later tests must be written)
+
+**1. A DAM-derived direction is never generic.** `d = Kᵀy*` with `y*` supported
+on the rows binding at `q^DAM`, so `d` always lies in the normal cone of the face
+it exposes. When exactly one row binds, `d` is *parallel* to that row's normal
+and the support face is the whole facet — not a vertex. On the 3-node:
+`derate`/(a) binds one row (edge face, functionals unidentified),
+`dam_outage`/(a) binds two (vertex, everything identified). Consequences:
+- Don't assume a "generic direction gives a unique optimum" — it usually doesn't.
+- Tests of `prop:primal_invariance` must use a case whose *intersection* face is
+  an edge, or the condition holds trivially and the test is vacuous:
+  when `span{1} + row(K_{J*(f∧g)})` is all of `Rⁿ` every `w` passes.
+
+**2. `mixed` does not exhibit the T2 headline.** It has `coverage_U` rows *and*
+`level_V` rows (row-level composition is exactly right), but `U = 0` in all three
+scenarios: the 0.75 derate is so tight that the DAM's extra `SC` contingency
+never bites at the intersection optimum. This is `prop:composition` item 3 —
+disagreement composes over rows, *value* does not. Sweeping the derate at
+scenario (a) finds the window where both modes are positive:
+
+| α | 0.75 | 0.85 | 0.90 | 0.95 | 0.98 | 1.00 |
+|---|---|---|---|---|---|---|
+| `U` | 0 | 1069 | 1604 | 2139 | 2460 | 2674 |
+| `V` | 2140 | 1284 | 856 | 428 | 171 | 0 |
+
+So T2 needs a **tuned** case (α ≈ 0.85–0.9 at scenario (a)), not `mixed` as it
+stands. Scenarios (b)/(c) give `V = 0` and `U = 0` respectively at every α, so
+the witness is scenario-specific too.
 
 ### Per-contingency / asymmetric / emergency-rating limits
 Supported: `b` is a free per-row vector and `clear_dam` reads the upper and lower
@@ -194,14 +228,8 @@ limit per contingency independently. (`from_limits` was considered and dropped �
 
 ### Next — the misalignment-attribution test backlog (T0–T5, toy first)
 
-Step 1 (notation) is **done**. Remaining, in order:
+Steps 1 (notation) and 2 (primitives) are **done**. Remaining, in order:
 
-2. **Three primitives.** `meet(f, g)` (the `f ∧ g` model); a *primal* face
-   explorer (max/min over `{q : Kq ⪯ b, dᵀq = h}` — the mirror of
-   `robust_bounds`, and likely HiGHS-only for the same thin-slab reason), needed
-   to produce two distinct `q^∧` for `prop:primal_invariance`; and an `in_span`
-   least-squares residual test, which serves *both* invariance propositions
-   (`prop:invariant_subset` via `b_S ⊥ ker C`, and `prop:primal_invariance`).
 3. **`attribution.py` — reporting, not primitives.** `U`, `V`, `Δ = U − V`;
    `U^(S)`; the floor `Σ_{i∈S} μ^f_i [f_i − (f∧g)_i]`; the ceiling
    `fᵀμ − dᵀq` (takes `q` as an argument — by `rem:injection_nesting` the choice

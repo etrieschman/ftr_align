@@ -170,7 +170,7 @@ class Contingency:
 
 
 # ----------------------------------------------------------------------------
-# Network model: geometry (A) + limits (b), assembled from contingencies
+# Network model: geometry (K) + limits (b), assembled from contingencies
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class NetworkModel:
@@ -299,3 +299,46 @@ def align(*models: NetworkModel) -> list[NetworkModel]:
         ]
         out.append(NetworkModel.build(network, conts))
     return out
+
+
+def meet(f: NetworkModel, g: NetworkModel) -> NetworkModel:
+    """The intersection model ``f ^ g`` (``def:intersection``): the network model
+    enforcing both models' limits at the tighter of the two.
+
+    ``Q(f ^ g) = Q(f) n Q(g)`` and ``J(f ^ g) = J(f) u J(g)``
+    (``prop:intersection_polytope``), so it is the model each market would adopt
+    if it had to respect the other's, and the reference point for both failure
+    modes: ``U = h(f;y) - h(f^g;y)``, ``V = h(g;y) - h(f^g;y)``.
+
+    **The intersection is a stack, not an elementwise minimum.** In general
+    ``Q(f) n Q(g)`` is cut by ``[K_f; K_g] q <= [f; g]``.  Under Assumption 1 the
+    two models share a ``K``, so after :func:`align` the stack holds identical row
+    pairs -- ``K_i q <= f_i`` and ``K_i q <= g_i`` -- which is *exactly*
+    ``K_i q <= min(f_i, g_i)``.  The collapse is algebraic, not a tolerance, and
+    costs no extra rows, which is why the minimum is the implementation here.
+    When ERCOT breaks the shared-``K`` assumption there is no minimum to take and
+    this must fall back to the genuine stack; the guard below is where that goes.
+    """
+    f_u, g_u = align(f, g)
+    if not np.allclose(f_u.K, g_u.K):
+        raise NotImplementedError(
+            "meet() requires a common constraint geometry (Assumption 1): the two "
+            "models' PTDFs differ, so their rows do not correspond and there is no "
+            "elementwise minimum to take.  The intersection is still well defined "
+            "as the stacked system [K_f; K_g] q <= [f; g] -- implement that here."
+        )
+    conts = tuple(
+        Contingency(
+            cf.key,
+            upper=np.minimum(cf.upper, cg.upper),
+            lower=np.minimum(cf.lower, cg.lower),
+        )
+        for cf, cg in zip(f_u.contingencies, g_u.contingencies)
+    )
+    # K is shared, so reuse it rather than re-inverting the PTDFs per contingency.
+    return NetworkModel(
+        network=f_u.network,
+        contingencies=conts,
+        K=f_u.K,
+        b=np.minimum(f_u.b, g_u.b),
+    )
