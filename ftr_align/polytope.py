@@ -52,6 +52,23 @@ def free_basis(n: int, drop: int) -> np.ndarray:
     return T
 
 
+def basis_from_columns(columns) -> np.ndarray:
+    """Assemble a basis ``T`` from explicit injection patterns, one per plot axis.
+
+    Each column says "what moving one unit along this axis does to the nodal
+    injections", and must be balanced.  Use this when the axes should tell a
+    story rather than name two nodes -- e.g. on the 3-node, ``(0, 1, -1)`` and
+    ``(1, -1, 0)`` give axes of *total load served* and *solar dispatch*, which
+    is the pairing the conference figures used.
+    """
+    T = np.asarray(columns, dtype=float).T
+    if abs(T.sum(axis=0)).max() > VERTEX_TOL:
+        raise ValueError("each column must be a balanced injection (sum to zero)")
+    if np.linalg.matrix_rank(T) != T.shape[1]:
+        raise ValueError("columns must be linearly independent")
+    return T
+
+
 def plane_system(
     model: NetworkModel, T: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

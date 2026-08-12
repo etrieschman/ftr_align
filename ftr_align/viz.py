@@ -47,8 +47,12 @@ def to_plot(T: np.ndarray, q: np.ndarray) -> np.ndarray:
     return np.linalg.lstsq(np.asarray(T), np.asarray(q), rcond=None)[0]
 
 
-def draw_region(ax, model: NetworkModel, T=None, *, label=None, **style):
-    """Fill and outline ``Q(b)``."""
+def draw_region(ax, model: NetworkModel, T=None, *, label=None, outline=True, **style):
+    """Fill ``Q(b)``, and by default stroke its boundary.
+
+    Pass ``outline=False`` when :func:`draw_constraints` is also being drawn: the
+    constraint lines already trace the boundary, and stroking it again puts a
+    second colour on top of the per-element one."""
     T = basis(model) if T is None else T
     style = {**DAM_STYLE, **style}
     verts = polygon(model, T)
@@ -63,34 +67,67 @@ def draw_region(ax, model: NetworkModel, T=None, *, label=None, **style):
         label=label,
         zorder=1,
     )
-    ax.plot(
-        closed[:, 0],
-        closed[:, 1],
-        color=style["color"],
-        ls=style["ls"],
-        lw=style.get("lw", 1.4),
-        zorder=3,
-    )
+    if outline:
+        ax.plot(
+            closed[:, 0],
+            closed[:, 1],
+            color=style["color"],
+            ls=style["ls"],
+            lw=style.get("lw", 1.4),
+            zorder=3,
+        )
     return verts
 
 
-def draw_constraints(ax, model: NetworkModel, T=None, *, names=True, **style):
-    """One line per enforced row, drawn across the current axis limits.
+def element_color(model: NetworkModel, row: int) -> str:
+    """Colour for a constraint row, keyed by its **element**.
 
-    Useful when the figure is about *which* constraint bounds the region where;
-    :func:`draw_region` alone shows only the envelope."""
+    One colour per transmission element, so a line keeps its identity across
+    contingencies, across models, and across figures -- the convention the
+    conference figures used.  Upper and lower rows of the same element share it,
+    which is right: they are two sides of one limit."""
+    return f"C{int(row) % model.ell}"
+
+
+def draw_constraints(
+    ax,
+    model: NetworkModel,
+    T=None,
+    *,
+    ls=None,
+    lw=0.9,
+    names=True,
+    colors=None,
+    styles=("solid", "dashed", "dashdot", "dotted"),
+    **kw,
+):
+    """One line per enforced row, drawn right across the current axis limits.
+
+    Colour identifies the **element** and line style the **contingency**, so a
+    figure can be read without a legend once the palette is known.  Pass ``ls`` to
+    force a single style for the whole model -- useful when style is already
+    carrying the DAM/FTR distinction.
+
+    Only the upper-limit row of each (contingency, element) is labelled, so the
+    legend has one entry per line rather than two identical ones.
+    """
     T = basis(model) if T is None else T
-    style = {**DAM_STYLE, **style}
     M, c, rows = plane_system(model, T)
     labels = model.labels()
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    for (a, rhs, row) in zip(M, c, rows):
+    half, ell = model.n_rows // 2, model.ell
+
+    for a, rhs, row in zip(M, c, rows):
+        row = int(row)
+        colour = colors[row % ell] if colors is not None else element_color(model, row)
+        style = ls if ls is not None else styles[((row % half) // ell) % len(styles)]
+        upper = row < half
         text = (
-            f"{labels['contingency'][int(row)]}:{labels['element'][int(row)]}"
-            if names
+            f"{labels['contingency'][row]}:{labels['element'][row]}"
+            if names and upper
             else None
         )
-        _draw_line(ax, a, rhs, xlim, ylim, label=text, **style)
+        _draw_line(ax, a, rhs, xlim, ylim, label=text, color=colour, ls=style, lw=lw)
 
 
 def _draw_line(ax, a, c, xlim, ylim, *, label=None, color="grey", ls="solid", **kw):
@@ -143,15 +180,26 @@ def draw_halfplane(ax, a, c, *, label=None, color="C2", ls="solid", lw=0.8):
                ax.get_xlim(), ax.get_ylim(), label=label, color=color, ls=ls, lw=lw)
 
 
-def label_axes(ax, model: NetworkModel, T=None, drop: int | None = None):
-    """Name the axes from the basis, when it is a plain drop-one-node basis."""
+def label_axes(
+    ax,
+    model: NetworkModel,
+    T=None,
+    drop: int | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+):
+    """Name the axes.
+
+    Defaults to reading them off a plain drop-one-node basis; pass ``xlabel`` /
+    ``ylabel`` for a basis whose axes are combinations rather than single nodes
+    (see :func:`polytope.basis_from_columns`)."""
     net = model.network
     drop = net.slack_idx if drop is None else drop
     names = net.node_names
     kept = [i for i in range(net.n_nodes) if i != drop % net.n_nodes]
-    if names is None:
-        ax.set_xlabel(f"q[{kept[0]}]")
-        ax.set_ylabel(f"q[{kept[1]}]")
-    else:
-        ax.set_xlabel(f"$q_{{{names[kept[0]]}}}$")
-        ax.set_ylabel(f"$q_{{{names[kept[1]]}}}$")
+    if xlabel is None:
+        xlabel = f"q[{kept[0]}]" if names is None else f"$q_{{{names[kept[0]]}}}$"
+    if ylabel is None:
+        ylabel = f"q[{kept[1]}]" if names is None else f"$q_{{{names[kept[1]]}}}$"
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
