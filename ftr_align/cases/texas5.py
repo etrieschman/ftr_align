@@ -6,52 +6,47 @@ peripheral node connects to D, with additional corridors WN, WS, NH, SH.
 
 Three structures the 3-node cannot show:
 
-* the **parallel WD pair** -- identical PTDF rows, so mu trades freely between
-  them and ``Lambda*(b;y)`` is genuinely non-singleton;
-* the **WN / SH pair** -- priced together but carrying no circulation between
-  them, so their attributed values are individually identified;
-* the **SDH triangle** -- a circulation, so if it also preserves the
+* the **parallel WD pair** (``WD1``/``WD2``, equal reactance) -- identical PTDF
+  rows, so ``mu`` trades freely between them and ``Lambda*(b;y)`` is genuinely
+  non-singleton;
+* the **WN / SH pair** -- can be priced together while carrying no circulation
+  between them, so their attributed values stay individually identified;
+* the **SDH triangle** -- a circulation, so when it also preserves the
   limit-weighted value only the joint attribution is identified.
+
+**No bid data, deliberately.**  Every proposition in the memos is stated at an
+arbitrary certificate ``y >= 0``; only ``prop:support`` (the market reading of
+``h(g;y*)`` as merchandising surplus) needs ``y`` to come from a clearing, and
+the 3-node oracle already anchors that.  So work here by positing a direction
+``d`` -- or by designing limits so that a chosen constraint pattern binds, as
+``notebooks/explore_texas5.py`` does -- rather than inventing offers whose only
+job would be to produce a ``y`` we could have written down.
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from ..network import Contingency, NetworkModel, PhysicalNetwork
-from ..solve import DamInstance
+from ..network import PhysicalNetwork
 
 NODE_NAMES = np.array(["W", "N", "S", "D", "H"])
 W, N, S, D, H = 0, 1, 2, 3, 4
 ELEMENT_NAMES = np.array(["WN", "WS", "WD1", "WD2", "ND", "NH", "SD", "SH", "DH"])
 WN, WS, WD1, WD2, ND, NH, SD, SH, DH = 0, 1, 2, 3, 4, 5, 6, 7, 8
 
-# incidence (node x line), reactances, slack at L
-INC = np.array([
-    [1,  1,  1,  1,  0,  0,  0,  0,  0], 
-    [-1, 0,  0,  0,  1,  1,  0,  0,  0], 
-    [0, -1,  0,  0,  0,  0,  1,  1,  0], 
-    [0,  0, -1, -1, -1,  0, -1,  0,  1], 
-    [0,  0,  0,  0,  0,  -1,  0, -1, -1]], dtype=float)
-X = np.array([2., 1., 1., 1., 2., 2., 1., 2., 1.])  # reactances
-BASE_LIMITS = np.array([100.]*len(ELEMENT_NAMES))  # line limits
-NETWORK = PhysicalNetwork(
-    A=INC, x=X, slack_idx=D, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
+# node-branch incidence (node x element), reactances, slack at D
+A = np.array(
+    [
+        [1, 1, 1, 1, 0, 0, 0, 0, 0],
+        [-1, 0, 0, 0, 1, 1, 0, 0, 0],
+        [0, -1, 0, 0, 0, 0, 1, 1, 0],
+        [0, 0, -1, -1, -1, 0, -1, 0, 1],
+        [0, 0, 0, 0, 0, -1, 0, -1, -1],
+    ],
+    dtype=float,
 )
-
-# DAM bid structure shared by every clearing scenario
-M_GEN = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)  # gS at S, gC at C
-M_DEM = np.array([[0], [0], [1]], dtype=float)  # dL at L
-MIN_GEN = np.zeros(2)
-P_GEN = np.array([5.0, 150.0])
-
-def dam_instance(q_dem: list[float], max_gen: list[float]) -> DamInstance:
-    """A DAM clearing scenario.  Only demand and the generation caps vary across
-    the toy patterns; the rest of the bid structure is fixed."""
-    return DamInstance(
-        M_gen=M_GEN,
-        M_dem=M_DEM,
-        min_gen=MIN_GEN,
-        max_gen=np.asarray(max_gen, dtype=float),
-        p_gen=P_GEN,
-        q_dem=np.asarray(q_dem, dtype=float),
-    )
+X = np.array([2.0, 1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 2.0, 1.0])
+BASE_LIMITS = np.full(len(ELEMENT_NAMES), 100.0)
+NETWORK = PhysicalNetwork(
+    A=A, x=X, slack_idx=D, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
+)

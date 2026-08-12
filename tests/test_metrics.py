@@ -12,7 +12,7 @@ import pytest
 from ftr_align import SupportProblem, align, clear_dam, meet, row_table, run_row
 from ftr_align.attribution import block_shares, failure_modes
 from ftr_align.duality import attribution_blocks, block_totals
-from ftr_align.metrics import block_table
+from ftr_align.metrics import block_table, support_summary
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}
@@ -110,3 +110,25 @@ def test_block_table_reports_support_totals_too():
     # the parallel twins are reported as one block, with both members named
     (members,) = table.filter(pl.col("size") == 2)["members"].to_list()
     assert sorted(members) == ["base:SLa:upper", "base:SLb:upper"]
+
+
+def test_support_summary_reports_attribution_shape():
+    """The single-model counterpart of run_row.  On the redundant toy the
+    parallel twins are one block of size 2 with a 1-dimensional trade space --
+    the smallest case where constraint-level attribution is unidentified."""
+    sys = toy.REDUNDANT_MODELS["derate"][1]
+    prob = SupportProblem(sys, _direction(sys))
+    row = support_summary(prob, labels={"case": "redundant"}, solver=CLEAR)
+
+    assert row["case"] == "redundant"
+    assert row["h"] == pytest.approx(32625, abs=2)
+    assert row["n_priced"] == 2
+    assert row["n_blocks"] == 1
+    assert row["max_block"] == 2
+    assert row["dim_trade_space"] == 1
+
+    # the plain toy has a unique dual: every priced row is its own block
+    _, g = toy.MODELS["derate"]
+    plain = support_summary(SupportProblem(g, _direction(g)), solver=CLEAR)
+    assert plain["max_block"] == 1
+    assert plain["dim_trade_space"] == 0

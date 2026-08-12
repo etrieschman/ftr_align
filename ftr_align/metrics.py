@@ -106,6 +106,31 @@ def dual_summary(
     return out
 
 
+def support_summary(
+    problem: SupportProblem, labels: dict | None = None, solver=None
+) -> dict:
+    """One flat record for a **single** support solve: its value and the shape of
+    the attribution it admits.
+
+    The one-model counterpart of :func:`run_row`, for when there is no ``(f, g)``
+    pair -- a designed limit vector, or a pattern probed at a posited direction.
+    ``n_blocks`` / ``max_block`` / ``dim_trade_space`` are exactly the N1
+    quantities ("do blocks bind?"): all-singletons means attribution is
+    effectively constraint-level, one giant block means constraint-level
+    attribution is not identified at all."""
+    sol = problem.solve(solver=solver)
+    blocks = attribution_blocks(problem)
+    sizes = [len(rows) for rows in blocks]
+    return {
+        **(labels or {}),
+        "h": sol.value,
+        "n_priced": sum(sizes),
+        "n_blocks": len(blocks),
+        "max_block": max(sizes, default=0),
+        "dim_trade_space": sum(sizes) - len(blocks),
+    }
+
+
 def run_row(
     f: NetworkModel,
     g: NetworkModel,

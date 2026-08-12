@@ -149,19 +149,20 @@ ftr_align/
                 prop:kinds)
   metrics.py    net_dual, row_labels, run_row (one flat record per (model pair,
                 direction) cell), row_table (per-constraint detail),
-                block_table, alignment_summary (Table II), dual_summary
-                (Table III)
+                block_table, support_summary (the one-model counterpart of
+                run_row), alignment_summary (Table II), dual_summary (Table III)
   cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,
                 bid matrices) + the paper's cases as constants: SCENARIOS (label
                 -> DamInstance, via dam_instance(q_dem, max_gen)), MODELS (label
                 -> (f, g) pair == (FTR, DAM), built from Contingency lists),
                 REDUNDANT_MODELS (double-circuit variant).  No builder fn --
                 models are assembled inline with NetworkModel.build.
-  cases/texas5.py  5-node of the attribution memo (fig_texas5): parallel WD pair
-                (non-singleton Lambda*), WN/SH pair (priced, no circulation ->
-                individually identified), SDH triangle (circulation).  Topology
-                only -- bid data is a stub and deliberately not finished; posit
-                `d` instead.
+  cases/texas5.py  5-node of the attribution memo (fig_texas5): parallel WD
+                pair (non-singleton Lambda*), WN/SH pair (priced, no circulation
+                -> individually identified), SDH triangle (circulation).
+                **Topology only, no bid data by design** -- every proposition
+                holds at arbitrary `y ⪰ 0`, and only `prop:support` needs a real
+                clearing, which the 3-node oracle already anchors.
   cases/rts_gmlc.py  73-bus loader: SHA-pinned fetch (RTS_GMLC_REF + MANIFEST
                 checksums) of bus/branch/gen CSVs + day-ahead load/renewable
                 timeseries -> load_network (DC PTDF w/ magnitude taps),
@@ -237,6 +238,27 @@ scenario (a) finds the window where both modes are positive:
 So T2 needs a **tuned** case (α ≈ 0.85–0.9 at scenario (a)), not `mixed` as it
 stands. Scenarios (b)/(c) give `V = 0` and `U = 0` respectively at every α, so
 the witness is scenario-specific too.
+
+### The 5-node validates all three attribution structures (step 6)
+
+`notebooks/explore_texas5.py` designs a limit vector making a chosen constraint
+pattern bind exactly (maximise the slack at all other rows subject to the chosen
+rows being tight), which *is* positing `y` — no bids needed. The resulting
+`support_summary` across patterns reproduces the attribution memo's motivating
+example exactly:
+
+| pattern | `h` | priced | blocks | max block | `dim ker C` |
+|---|---|---|---|---|---|
+| `parallel_wd` | 200.0 | 2 | 1 | 2 | 1 |
+| `two_blocks` | 1137.5 | 7 | 2 | 4 | 5 |
+| `outer_loop` | 575.0 | 4 | 1 | 4 | 3 |
+| `no_loop` | 137.5 | 2 | **2** | **1** | **0** |
+
+`no_loop` (the `WN`/`SH` pair) is the one that matters: priced together yet split
+into two singleton blocks with an empty trade space, because there is no
+circulation joining them — exactly the memo's claim that being in the same
+certificate is not a reason to aggregate. `outer_loop` is the contrast: a
+circulation binds four rows into one block.
 
 ### A finding from step 3: tolerances must scale with the *support values*
 
@@ -327,12 +349,10 @@ are **done**. Remaining, in order:
    pass/fail, no tolerance judgment. **Stop and read the floor-to-total ratio**:
    it decides whether the floor is an instrument or a footnote, and how much
    reporting apparatus is worth carrying to RTS.
-6. **5-node (`cases/texas5.py`), bid-free.** Topology already matches `fig_texas5`
-   (parallel `WD1`/`WD2`, the no-circulation `WN`/`SH` pair, the `SDH` triangle)
-   but `M_GEN`/`M_DEM` are copy-pasted from the 3-node at the wrong node count.
-   Posit `d` directly rather than writing bids. Then T3/T4 as queries over one
-   shared grid of `(model pair, d)` cells, so sub/superadditive witnesses are
-   *found* rather than constructed.
+6. **T3/T4 on the 5-node** as queries over one shared grid of `(model pair, d)`
+   cells, so sub/superadditive witnesses are *found* rather than constructed.
+   The case file and notebook are **done** (see the validation below); what
+   remains is the grid and the model pairs, i.e. numerical setup.
 7. **Search + viz, one tool.** Vertex enumeration of `Q(b)` gives active sets and
    representative directions at any dimension; in 2-D, sorting the vertices
    angularly *is* the `d`-sweep, so T5 and the paper figure come free. Guard at

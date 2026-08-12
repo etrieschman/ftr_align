@@ -12,8 +12,7 @@ from ftr_align.duality import (
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import block_table
-from ftr_align.metrics import EPS
+from ftr_align.metrics import block_table, row_table, run_row
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
@@ -57,23 +56,31 @@ print(f"h(f) = {h_f.value:,.0f}")
 print(f"Δ  = h(f)-h(g) = {h_f.value - h_g.value:,.0f}")
 
 # %%
-# Table I
-rows = []
-for vname, (f_model, g_model) in toy.MODELS.items():
-    for sname, scenario in toy.SCENARIOS.items():
-        dam = clear_dam(g_model, scenario, solver=CLEAR)
-        sol_f = SupportProblem(f_model, dam.direction).solve(solver=CLEAR)
-        sol_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR)
-        rows.append(
-            {
-                "variation": vname,
-                "scenario": sname,
-                "MS_DAM": sol_g.value,
-                "Delta": sol_f.value - sol_g.value,
-                "eta": None if abs(sol_g.value) < EPS else sol_f.value / sol_g.value,
-            }
-        )
-pl.DataFrame(rows)
+# Table I -- one run_row per (case, scenario) cell.  run_row returns a dict, so
+# the sweep is a list comprehension and a new column is a new key.
+runs = pl.DataFrame([
+    run_row(f_model, g_model,
+            clear_dam(g_model, scenario, solver=CLEAR).direction,
+            labels={"variation": vname, "scenario": sname}, solver=CLEAR)
+    for vname, (f_model, g_model) in toy.MODELS.items()
+    for sname, scenario in toy.SCENARIOS.items()
+])
+display(runs.select(["variation", "scenario", "h_f", "h_g", "Delta", "U", "V"]))
+
+# The floor's share of each failure mode -- the T1 number.  Reported per mode
+# because only *level* differences carry a floor at all (cor:diagnosable).
+display(runs.select([
+    "variation", "scenario", "U", "V",
+    "floor_U", "floor_ratio_U", "floor_V", "floor_ratio_V",
+]))
+
+# Attribution shape: block count and trade-space dimension per cell (the N1
+# question, in miniature).
+display(runs.select([
+    "variation", "scenario",
+    "n_blocks_U", "max_block_U", "n_blocks_V", "max_block_V",
+    "dim_trade_space_U", "dim_trade_space_V",
+]))
 
 # %%
 # Table II: dual attribution
@@ -153,5 +160,10 @@ for mode, model in (("U", f_model), ("V", g_model)):
     blocks, shares = block_shares(f_model, g_model, d, mode=mode, solver=CLEAR)
     print(f"\n{mode} by block")
     display(block_table(model, blocks, shares, value_name=mode))
+
+# Per-constraint detail: limits, the difference kind, the certificate, the row's
+# share, and the block it landed in.  Only rows that disagree or carry value.
+print("\n~~~~~~~~ Per-constraint detail (V)")
+display(row_table(f_model, g_model, d, mode="V", solver=CLEAR))
 
 # %%

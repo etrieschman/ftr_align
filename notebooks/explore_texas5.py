@@ -16,7 +16,7 @@ from ftr_align.duality import (
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import EPS, block_table
+from ftr_align.metrics import block_table, support_summary
 from ftr_align.cases import texas5
 from ftr_align.cases.texas5 import WN, WS, WD1, WD2, ND, NH, SD, SH, DH
 from ftr_align.cases.texas5 import W, N, S, D, H
@@ -33,7 +33,7 @@ np.set_printoptions(precision=3, suppress=True)
 # INSPECT NETWORK
 # -------------------------------------
 net = texas5.NETWORK
-H = net.ptdf()
+H_base = net.ptdf()  # not `H`: that is the node index imported above
 n = net.n_nodes
 ell = net.n_elements
 
@@ -62,7 +62,7 @@ def solve_limit_design(patterns):
 
     for name, pattern in patterns.items():
         active = dict(pattern)
-        f = K @ q[name]
+        f = H_base @ q[name]
 
         if len(active) != len(pattern):
             raise ValueError(f"{name} contains a repeated element")
@@ -190,22 +190,31 @@ display(pl.DataFrame({
 # -------------------------------------
 # VERIFY PATTERNS AND BLOCKS
 # -------------------------------------
+# The designed limits make each pattern bind exactly, so each pattern gives a
+# direction d = K^T y whose optimal face is the one we asked for.  No bids: the
+# propositions hold at any y >= 0, and positing the pattern *is* positing y.
 model = NetworkModel.build(
     net,
     [Contingency(None, upper=b.value)],
 )
 
-for name, pattern in PATTERNS.items():
-    requested = dict(pattern)
-    designed_flow = H @ q[name].value
 
+def pattern_direction(pattern):
+    """d = K^T y for the certificate that puts unit weight on the pattern's
+    signed rows -- upper row for +1, lower row for -1."""
     y = np.zeros(model.n_rows)
     for e, direction in pattern:
-        row = e if direction == +1 else ell + e
-        y[row] = 1.0
+        y[e if direction == +1 else ell + e] = 1.0
+    return model.K.T @ y
 
-    support_problem = SupportProblem(model, model.K.T @ y)
-    solution = support_problem.solve()
+
+summaries = []
+for name, pattern in PATTERNS.items():
+    requested = dict(pattern)
+    designed_flow = H_base @ q[name].value
+
+    support_problem = SupportProblem(model, pattern_direction(pattern))
+    solution = support_problem.solve(solver=CLEAR)
 
     rows = []
 
@@ -239,5 +248,21 @@ for name, pattern in PATTERNS.items():
     blocks = attribution_blocks(support_problem)
     display(block_table(model, blocks,
                         block_totals(support_problem.data.b, solution.mu, blocks)))
+
+    summaries.append(
+        support_summary(support_problem, labels={"pattern": name}, solver=CLEAR)
+    )
+
+
+# %%
+# -------------------------------------
+# LIGHT SUMMARY ACROSS PATTERNS
+# -------------------------------------
+# The single-model counterpart of run_row.  dim_trade_space > 0 is the whole
+# point of this network: it means some attributed value is unidentified at the
+# constraint level and only the block total is reportable.
+display(
+    pl.DataFrame(summaries).with_columns(pl.col(pl.Float64).round(2))
+)
 
 # %%
