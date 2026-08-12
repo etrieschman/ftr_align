@@ -258,9 +258,20 @@ for name, pattern in PATTERNS.items():
 # -------------------------------------
 # LIGHT SUMMARY ACROSS PATTERNS
 # -------------------------------------
-# The single-model counterpart of run_row.  dim_trade_space > 0 is the whole
-# point of this network: it means some attributed value is unidentified at the
-# constraint level and only the block total is reportable.
+# The single-model counterpart of run_row.  Read it as:
+#
+#   n_priced         rows carrying weight in some optimal certificate, J*(b;y)
+#   n_blocks         groups those rows partition into -- NOT a measure of
+#                    ambiguity.  Two rows that cannot trade give TWO singleton
+#                    blocks, the fully-identified case.
+#   max_block        largest group; 1 means every row is separately attributable
+#   dim_trade_space  dim ker C; 0 means no ambiguity at all
+#
+# dim_trade_space > 0 is the whole point of this network -- it is the smallest
+# case where some attributed value is unidentified at the constraint level and
+# only the block total is reportable.  Compare `no_loop` (WN and SH priced
+# together, but no circulation joins them, so 2 singleton blocks and dim 0)
+# against `outer_loop` (a circulation binds four rows into one block).
 display(
     pl.DataFrame(summaries).with_columns(pl.col(pl.Float64).round(2))
 )

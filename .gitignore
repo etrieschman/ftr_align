@@ -21,3 +21,4 @@ env/
 
 # Fetched datasets (pinned + reproducible via cases/rts_gmlc.py MANIFEST)
 ftr_align/cases/data/
+notebooks/figures/

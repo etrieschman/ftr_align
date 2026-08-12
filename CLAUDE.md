@@ -151,7 +151,7 @@ ftr_align/
                 basis T with 1^T T = 0; reduced normals are just K T),
                 polygon (exact 2-D outline by pairwise intersection -- no
                 interior point, no Qhull), faces (vertices + tight rows + an
-                exposing direction, general d via Qhull), is_bounded, hull_2d.
+                exposing direction, general d via Qhull), is_bounded.
                 Guarded at MAX_NODES.
   viz.py        3-node figures only: draw_region / draw_constraints /
                 draw_optimum / draw_halfplane / label_axes, composable onto one
@@ -179,6 +179,9 @@ ftr_align/
                 skipped), dam_instance(interval) (PWL step bids from heat-rate
                 segments, interval-synced renewable caps, regional load split to
                 buses). Cache gitignored.
+notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
+                explore_rts_gmlc, and figures_toy (writes to notebooks/figures/,
+                gitignored)
 tests/          oracle tests: Tables II & III, strong duality, blocks, align;
                 test_primitives (meet / primal_face_range / in_span);
                 test_attribution (T0 plumbing -- every memo invariant, over all
@@ -298,6 +301,15 @@ node being eliminated (`C`) and the gradient reads straight off `d` as
 conventions by a multiple of `1ᵀ`, which annihilates balanced injections — so
 changing it shifts `d` by a constant vector and leaves `Q(b)`, `h` and `μ`
 untouched (tested). Choosing the slack to suit a figure's axes is free.
+
+**Reading the block columns.** Blocks *partition* the priced rows `J*(b;y)`, so
+`n_blocks` counts groups, not ambiguity — two rows that cannot trade give **two**
+singleton blocks, which is the fully-identified case. Ambiguity is
+`dim_trade_space` (`0` = every row separately attributable) or equivalently
+`max_block` (`1` = the same thing). `run_row` reports `n_priced` alongside so
+`n_blocks == n_priced` reads directly as "all singletons". The plain 3-node has
+no parallel elements and is all singletons everywhere; the redundant variant and
+texas5's `parallel_wd`/`outer_loop` are where it stops being.
 
 **Viz is 3-node only, by decision.** At more nodes two coordinates are a
 *projection*, whose boundary edges are not images of individual constraints — a

@@ -169,6 +169,12 @@ def run_row(
             f"floor_ratio_{mode}": (
                 None if abs(modes[mode]) < zero else value / modes[mode]
             ),
+            # Blocks partition the *priced* rows J*(b;y), so n_blocks counts
+            # groups, not ambiguity: two rows that cannot trade give TWO
+            # singleton blocks, which is the fully-identified case.  Read
+            # n_blocks against n_priced -- equal means every row is its own
+            # block -- or read max_block, where 1 means the same thing.
+            f"n_priced_{mode}": sum(sizes),
             f"n_blocks_{mode}": len(blocks),
             f"max_block_{mode}": max(sizes, default=0),
             f"dim_trade_space_{mode}": sum(sizes) - len(blocks),

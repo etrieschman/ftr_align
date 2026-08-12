@@ -56,31 +56,57 @@ print(f"h(f) = {h_f.value:,.0f}")
 print(f"Δ  = h(f)-h(g) = {h_f.value - h_g.value:,.0f}")
 
 # %%
-# Table I -- one run_row per (case, scenario) cell.  run_row returns a dict, so
-# the sweep is a list comprehension and a new column is a new key.
-runs = pl.DataFrame([
-    run_row(f_model, g_model,
-            clear_dam(g_model, scenario, solver=CLEAR).direction,
-            labels={"variation": vname, "scenario": sname}, solver=CLEAR)
-    for vname, (f_model, g_model) in toy.MODELS.items()
-    for sname, scenario in toy.SCENARIOS.items()
-])
-display(runs.select(["variation", "scenario", "h_f", "h_g", "Delta", "U", "V"]))
+# -------------------------------------
+# SWEEP: one row per (case, scenario)
+# -------------------------------------
+# run_row(f, g, d) bundles what one cell needs.  Written out rather than
+# comprehended so it is obvious what varies and what each call costs:
+#
+#   clear_dam(g, scenario) -> y*, and the direction d = K^T y* it induces
+#   run_row(f, g, d)       -> failure_modes (3 support solves) + per-mode floor,
+#                             block count and trade-space dimension
+runs = []
+for case, (f_model, g_model) in toy.MODELS.items():
+    for scenario_name, scenario in toy.SCENARIOS.items():
+        dam = clear_dam(g_model, scenario, solver=CLEAR)
+        runs.append(
+            run_row(
+                f_model,
+                g_model,
+                dam.direction,
+                labels={"case": case, "scenario": scenario_name},
+                solver=CLEAR,
+            )
+        )
+runs = pl.DataFrame(runs).with_columns(pl.col(pl.Float64).round(1))
 
-# The floor's share of each failure mode -- the T1 number.  Reported per mode
-# because only *level* differences carry a floor at all (cor:diagnosable).
-display(runs.select([
-    "variation", "scenario", "U", "V",
-    "floor_U", "floor_ratio_U", "floor_V", "floor_ratio_V",
-]))
+# (1) The gap and its two one-signed halves.  Delta = U - V identically.
+display(runs.select("case", "scenario", "h_g", "h_f", "Delta", "U", "V"))
 
-# Attribution shape: block count and trade-space dimension per cell (the N1
-# question, in miniature).
-display(runs.select([
-    "variation", "scenario",
-    "n_blocks_U", "max_block_U", "n_blocks_V", "max_block_V",
-    "dim_trade_space_U", "dim_trade_space_V",
-]))
+# %%
+# (2) How much of each failure mode the floor explains.  Only *level*
+# differences can carry a floor at all, so a coverage-difference case shows a
+# structural zero rather than a small number.
+display(
+    runs.select(
+        "case", "scenario",
+        "U", "floor_U", "floor_ratio_U",
+        "V", "floor_V", "floor_ratio_V",
+    )
+)
+
+# %%
+# (3) Attribution shape.  Blocks PARTITION the priced rows, so n_blocks counts
+# groups rather than ambiguity: two rows that cannot trade give TWO singleton
+# blocks, which is the fully-identified case.  The ambiguity is dim_trade_space
+# (0 = every row individually attributable) or equivalently max_block (1 = same).
+# The plain 3-node has no parallel elements, so it is all singletons.
+display(
+    runs.select(
+        "case", "scenario",
+        "n_priced_V", "n_blocks_V", "max_block_V", "dim_trade_space_V",
+    )
+)
 
 # %%
 # Table II: dual attribution

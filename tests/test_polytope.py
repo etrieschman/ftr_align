@@ -13,7 +13,6 @@ from ftr_align.polytope import (
     Face,
     faces,
     free_basis,
-    hull_2d,
     is_bounded,
     plane_system,
     polygon,
@@ -183,13 +182,6 @@ def test_node_count_guard_explains_itself():
     model = NetworkModel.build(net, [Contingency(None, np.full(n, 100.0))])
     with pytest.raises(ValueError, match="Upper Bound Theorem"):
         faces(model)
-
-
-def test_hull_2d_orders_a_point_cloud():
-    pts = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]])
-    hull = hull_2d(pts)
-    assert len(hull) == 4  # the interior point is dropped
-    assert _area(hull) == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

@@ -28,12 +28,11 @@ from typing import NamedTuple
 
 import cvxpy as cp
 import numpy as np
-from scipy.spatial import ConvexHull, HalfspaceIntersection
+from scipy.spatial import HalfspaceIntersection
 
 from .network import NetworkModel
 
 MAX_NODES = 7  # above this the vertex count, not the runtime, is the problem
-MAX_VERTICES = 100_000  # backstop for a case that slips under MAX_NODES
 VERTEX_TOL = 1e-7  # numerical zero for feasibility / tightness / dedupe
 
 
@@ -154,7 +153,6 @@ def faces(
     model: NetworkModel,
     drop: int | None = None,
     tol: float = VERTEX_TOL,
-    max_vertices: int = MAX_VERTICES,
 ) -> list[Face]:
     """Every vertex of ``Q(b)``, with its active set and an exposing direction.
 
@@ -186,9 +184,6 @@ def faces(
         )
 
     verts = _polygon_2d(M, c, tol) if M.shape[1] == 2 else _vertices_nd(M, c)
-    if len(verts) > max_vertices:
-        raise ValueError(f"{len(verts)} vertices exceeds max_vertices={max_vertices}")
-
     out = []
     for u in verts:
         tight = rows[np.abs(M @ u - c) <= tol * np.maximum(1.0, np.abs(c))]
@@ -213,13 +208,3 @@ def polygon(
     M, c, _ = plane_system(model, T)
     verts = _polygon_2d(M, c, tol)
     return np.array(verts) if verts else np.zeros((0, 2))
-
-
-def hull_2d(points: np.ndarray) -> np.ndarray:
-    """Ordered outline of a 2-D point cloud -- the shadow of a higher-dimensional
-    polytope is the hull of its projected vertices."""
-    points = np.asarray(points, dtype=float)
-    if len(points) < 3:
-        return points
-    hull = ConvexHull(points)
-    return points[hull.vertices]
