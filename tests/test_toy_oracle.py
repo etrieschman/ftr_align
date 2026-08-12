@@ -38,35 +38,35 @@ def test_table_ii(key):
     variation, scenario = key
     ms_exp, delta_exp, eta_exp = TABLE_II[key]
 
-    dam_model, ftr_model = toy.MODELS[variation]
-    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    h_g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    f_model, g_model = toy.MODELS[variation]
+    dam = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    h_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    h_f = SupportProblem(f_model, dam.direction).solve(solver=CLEAR_SOLVER)
 
-    delta = h_g.value - h_f.value
-    eta = h_g.value / h_f.value if h_f.value else 0.0
-    assert h_f.value == pytest.approx(ms_exp, abs=2)
+    delta = h_f.value - h_g.value
+    eta = h_f.value / h_g.value if h_g.value else 0.0
+    assert h_g.value == pytest.approx(ms_exp, abs=2)
     assert delta == pytest.approx(delta_exp, abs=2)
     assert eta == pytest.approx(eta_exp, abs=0.01)
 
 
 @pytest.mark.parametrize("key", list(TABLE_II))
 def test_merch_surplus_equals_support_value(key):
-    """Prop. 1: realized DAM merchandising surplus == h(f; y*)."""
+    """Prop. 1: realized DAM merchandising surplus == h(g; y*)."""
     variation, scenario = key
-    dam_model, _ = toy.MODELS[variation]
-    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
-    h_f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    assert dam.merch_surp == pytest.approx(h_f.value, abs=1.0)
+    _, g_model = toy.MODELS[variation]
+    dam = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    h_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    assert dam.merch_surp == pytest.approx(h_g.value, abs=1.0)
 
 
 @pytest.mark.parametrize("key", list(TABLE_II))
 def test_strong_duality(key):
     """Primal support value == dual support value (Prop. 2)."""
     variation, scenario = key
-    dam_model, ftr_model = toy.MODELS[variation]
-    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
-    prob = SupportProblem(ftr_model, dam.direction)
+    f_model, g_model = toy.MODELS[variation]
+    dam = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    prob = SupportProblem(f_model, dam.direction)
     sol = prob.solve(solver=CLEAR_SOLVER, want_primal=True)
     primal_value = float(sol.q @ prob.data.direction)
     assert primal_value == pytest.approx(sol.value, abs=1.0)

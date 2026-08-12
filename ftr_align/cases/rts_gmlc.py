@@ -119,12 +119,12 @@ def load_network() -> PhysicalNetwork:
     branch = _read_csv(_BRANCH)
     n, ell = len(ids), len(branch)
 
-    inc = np.zeros((n, ell))
+    A = np.zeros((n, ell))
     frm = branch["From Bus"].to_numpy()
     to = branch["To Bus"].to_numpy()
     for j in range(ell):
-        inc[id_to_row[int(frm[j])], j] = 1.0
-        inc[id_to_row[int(to[j])], j] = -1.0
+        A[id_to_row[int(frm[j])], j] = 1.0
+        A[id_to_row[int(to[j])], j] = -1.0
 
     x = branch["X"].to_numpy().astype(float)
     tr = branch["Tr Ratio"].to_numpy().astype(float)
@@ -135,7 +135,7 @@ def load_network() -> PhysicalNetwork:
         raise ValueError(f"expected exactly one Ref bus, found {len(ref_rows)}")
 
     return PhysicalNetwork(
-        inc=inc,
+        A=A,
         x=x,
         slack_idx=int(ref_rows[0]),
         node_names=bus["Bus Name"].to_numpy(),
@@ -168,7 +168,7 @@ def n1_contingencies(
     conts = [Contingency(None, cont)]
     skipped: list[int] = []
     for i in range(ell):
-        if not is_connected(network.inc, i):
+        if not is_connected(network.A, i):
             skipped.append(i)
             continue
         upper = lte.copy()

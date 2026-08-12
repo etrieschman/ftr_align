@@ -6,15 +6,14 @@ import cvxpy as cp
 from itertools import product
 
 from ftr_align import SupportProblem, NetworkModel, Contingency
-from ftr_align.solve import dual_feasible
+from ftr_align.solve import Lambda
 from ftr_align.duality import (
     attribution_blocks,
     connected_blocks,
     classify,
     marginal_repair,
     robust_bounds,
-    shapley_repair,
-    support_index,
+    J_star_from_bounds,
     trade_matrix,
     trade_space,
 )
@@ -35,7 +34,7 @@ np.set_printoptions(precision=3, suppress=True)
 # INSPECT NETWORK
 # -------------------------------------
 net = toy_degen.NETWORK
-K = net.ptdf()
+H = net.ptdf()
 n = net.n_nodes
 ell = net.n_elements
 
@@ -199,14 +198,14 @@ model = NetworkModel.build(
 
 for name, pattern in PATTERNS.items():
     requested = dict(pattern)
-    designed_flow = K @ q[name].value
+    designed_flow = H @ q[name].value
 
     y = np.zeros(model.n_rows)
     for e, direction in pattern:
         row = e if direction == +1 else ell + e
         y[row] = 1.0
 
-    support_problem = SupportProblem(model, model.A.T @ y)
+    support_problem = SupportProblem(model, model.K.T @ y)
     solution = support_problem.solve()
 
     rows = []

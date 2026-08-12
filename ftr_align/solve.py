@@ -1,17 +1,26 @@
 """The LP machinery: one *network solve* as the primitive.
 
-A support function is ``h_Q(d) = max_{q in Q} d^T q`` for a node-space direction
-``d in R^n``.  Because ``d`` lives in node space -- shared by every model on the
-same network -- DAM and FTR support values and the gap need **no row alignment**:
-each solves on its own polytope with the same ``d``.
+A support function is ``h(b; y) = max_{q in Q(b)} d^T q`` for the node-space
+direction ``d = K^T y in R^n``.  Every object downstream -- ``Lambda``,
+``Lambda*``, ``J*``, the blocks, the floor, the ceiling -- depends on the
+certificate ``y`` *only* through ``d``, so ``d`` is what the code carries: the
+memos' ``(b; y)`` notation and this ``(model, direction)`` signature describe the
+same thing, with the redundant fibre quotiented out.  Because ``d`` lives in node
+space -- shared by every model on the same network -- the FTR model ``f`` and the
+DAM model ``g`` need **no row alignment** to be compared: each solves on its own
+polytope with the same ``d``.
 
 The canonical form is the **dual**,
 
     minimize    b^T mu
-    subject to  A^T mu + 1 s = d        (this equality system *is* Lambda(d))
+    subject to  K^T mu + 1 s = d        (this equality system *is* Lambda(y))
                 mu >= 0
 
 so the multipliers ``mu`` (what attribution cares about) are variables.
+
+Naming convention: capitalized assembly functions (:func:`Lambda`,
+:func:`Lambda_star`) return cvxpy constraint lists and never solve; lowercase
+functions solve.
 
 Solver seam: ``solve(solver=...)`` takes ``None | dict | custom solver``.
 ``None`` or a ``dict`` runs the built-in cvxpy path -- the dict is splatted
@@ -36,9 +45,27 @@ ZERO_TOL = 1e-7
 # ----------------------------------------------------------------------------
 # Composable assembly  (numpy- or cvxpy-valued args; reused by solve & duality)
 # ----------------------------------------------------------------------------
-def dual_feasible(A, mu, s, direction):
-    """Constraints defining ``Lambda(d)``: ``A^T mu + 1 s = direction``, ``mu >= 0``."""
-    return [A.T @ mu + s * np.ones(A.shape[1]) == direction, mu >= 0]
+def Lambda(K, mu, s, direction):
+    """Constraints defining the dual-feasible set ``Lambda(y)``:
+    ``K^T mu + 1 s = direction``, ``mu >= 0``.
+
+    Depends only on the geometry ``K`` and the direction -- never on the limit
+    vector ``b``.  That is what puts every network model on one common
+    dual-feasible set, so models differ only through their dual objectives."""
+    return [K.T @ mu + s * np.ones(K.shape[1]) == direction, mu >= 0]
+
+
+def Lambda_star(K, b, mu, s, direction, value, tol):
+    """Constraints defining the optimal dual face ``Lambda*(b; y)``: dual
+    feasibility capped by the optimal value, ``{b^T mu == value}`` to within
+    ``tol``.
+
+    The cap is a razor-thin slab, so problems built on this must be solved with
+    simplex (HiGHS) and pinned to a ``value`` from the same engine."""
+    return Lambda(K, mu, s, direction) + [
+        support_objective(b, mu) <= value + tol,
+        support_objective(b, mu) >= value - tol,
+    ]
 
 
 def support_objective(b, mu):
@@ -46,9 +73,9 @@ def support_objective(b, mu):
     return b @ mu
 
 
-def network_constraints(A, b, q):
-    """Primal network feasibility: ``A q <= b``, ``1^T q = 0``."""
-    return [A @ q <= b, cp.sum(q) == 0]
+def network_constraints(K, b, q):
+    """Primal network feasibility: ``K q <= b``, ``1^T q = 0``."""
+    return [K @ q <= b, cp.sum(q) == 0]
 
 
 # ----------------------------------------------------------------------------
@@ -59,9 +86,9 @@ class SupportData:
     """The math of one support problem, no solver attached.  ``b`` and (later)
     ``mu`` are co-indexed full-length vectors over the model's rows."""
 
-    A: np.ndarray  # (n_rows, n)
+    K: np.ndarray  # (n_rows, n)
     b: np.ndarray  # (n_rows,) limits; +inf on unmonitored rows
-    direction: np.ndarray  # (n,) node-space support direction d
+    direction: np.ndarray  # (n,) node-space support direction d = K^T y
 
     @property
     def active(self) -> np.ndarray:
@@ -86,7 +113,7 @@ class SupportProblem:
     def __init__(self, model: NetworkModel, direction: np.ndarray):
         self.model = model
         self.data = SupportData(
-            A=model.A, b=model.b, direction=np.asarray(direction, dtype=float)
+            K=model.K, b=model.b, direction=np.asarray(direction, dtype=float)
         )
 
     def solve(self, solver=None, want_primal: bool = False) -> SupportSolution:
@@ -104,9 +131,9 @@ def solve_support_cvxpy(
     data = problem.data
     active = data.active
 
-    mu = cp.Variable(data.A.shape[0], nonneg=True, name="mu")
+    mu = cp.Variable(data.K.shape[0], nonneg=True, name="mu")
     s = cp.Variable(name="s")
-    constraints = dual_feasible(data.A, mu, s, data.direction)
+    constraints = Lambda(data.K, mu, s, data.direction)
     if (~active).any():
         constraints.append(mu[~active] == 0)
     objective = cp.Minimize(support_objective(data.b[active], mu[active]))
@@ -125,13 +152,13 @@ def solve_support_cvxpy(
 
 
 def _solve_primal(problem: SupportProblem, opts: dict | None = None) -> np.ndarray:
-    """Primal support: ``max d^T q  s.t.  A_active q <= b_active, 1^T q = 0``."""
+    """Primal support: ``max d^T q  s.t.  K_active q <= b_active, 1^T q = 0``."""
     opts = opts or {}
     data = problem.data
     active = data.active
-    q = cp.Variable(data.A.shape[1], name="q")
+    q = cp.Variable(data.K.shape[1], name="q")
     objective = cp.Maximize(data.direction @ q)
-    cp.Problem(objective, network_constraints(data.A[active], data.b[active], q)).solve(**opts)
+    cp.Problem(objective, network_constraints(data.K[active], data.b[active], q)).solve(**opts)
     return np.asarray(q.value, dtype=float)
 
 
@@ -154,14 +181,15 @@ class DamResult(NamedTuple):
     value: float
     q: np.ndarray  # (n,) nodal injections
     y: np.ndarray  # (n_rows,) stacked-nonneg certificate over the DAM model's rows
-    direction: np.ndarray  # (n,) = A^T y, the node-space congestion direction
+    direction: np.ndarray  # (n,) = K^T y, the node-space congestion direction
     merch_surp: float
     status: str
 
 
 def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
-    """Clear the DAM on ``model`` and return its shadow-price certificate ``y*``
-    (over the model's rows) and the induced node-space ``direction = A^T y*``.
+    """Clear the DAM on ``model`` (the network model ``g``) and return its
+    shadow-price certificate ``y*`` (over the model's rows) and the induced
+    node-space ``direction = K^T y*``.
 
     ``solver`` is a dict of cvxpy options (or ``None``); under dual degeneracy
     ``y*`` is non-unique and an interior-point solver
@@ -178,12 +206,12 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
         q_gen <= inst.max_gen,
     ]
 
-    upper, lower, K = {}, {}, {}
+    upper, lower, H = {}, {}, {}
     for c in model.contingencies:
         if not np.isfinite(c.upper).any() and not np.isfinite(c.lower).any():
             continue  # unmonitored contingency (e.g. inf limits after align)
-        K[c.key] = net.ptdf(c.key)
-        flow = K[c.key] @ q
+        H[c.key] = net.ptdf(c.key)
+        flow = H[c.key] @ q
         upper[c.key], lower[c.key] = flow <= c.upper, -flow <= c.lower
         constraints += [upper[c.key], lower[c.key]]
 
@@ -204,13 +232,13 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
         mu_l = np.asarray(lower[key].dual_value, dtype=float)
         y[model.rows_upper(key)] = mu_u
         y[model.rows_lower(key)] = mu_l
-        merch += (mu_u - mu_l) @ (K[key] @ q_value)
+        merch += (mu_u - mu_l) @ (H[key] @ q_value)
 
     return DamResult(
         value=float(problem.value),
         q=q_value,
         y=y,
-        direction=model.A.T @ y,
+        direction=model.K.T @ y,
         merch_surp=float(merch),
         status=str(problem.status),
     )

@@ -27,10 +27,10 @@ def conts(net):
 # --- network geometry -------------------------------------------------------
 def test_network_invariants(net):
     assert net.n_nodes == 73 and net.n_elements == 120
-    assert set(np.unique(net.inc).tolist()) <= {-1.0, 0.0, 1.0}
+    assert set(np.unique(net.A).tolist()) <= {-1.0, 0.0, 1.0}
     # each branch column has exactly one +1 and one -1 (two distinct endpoints)
-    assert np.all((net.inc == 1.0).sum(axis=0) == 1)
-    assert np.all((net.inc == -1.0).sum(axis=0) == 1)
+    assert np.all((net.A == 1.0).sum(axis=0) == 1)
+    assert np.all((net.A == -1.0).sum(axis=0) == 1)
     assert np.all(net.x > 0.0)
     assert net.node_names.shape == (73,) and net.element_names.shape == (120,)
 
@@ -64,7 +64,7 @@ def test_ptdf_slack_column_zero(net):
 def test_bridges_skipped(net, conts):
     from ftr_align.network import is_connected
 
-    bridges = [i for i in range(net.n_elements) if not is_connected(net.inc, i)]
+    bridges = [i for i in range(net.n_elements) if not is_connected(net.A, i)]
     assert bridges, "RTS-GMLC has radial branches"
     keys = {c.key for c in conts}
     assert all(b not in keys for b in bridges)
@@ -75,7 +75,7 @@ def test_bridges_skipped(net, conts):
 def test_ptdf_disconnected_raises(net):
     from ftr_align.network import is_connected
 
-    bridge = next(i for i in range(net.n_elements) if not is_connected(net.inc, i))
+    bridge = next(i for i in range(net.n_elements) if not is_connected(net.A, i))
     with pytest.raises(ValueError, match="disconnected"):
         net.ptdf(bridge)
 

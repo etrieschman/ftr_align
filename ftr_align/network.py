@@ -1,20 +1,23 @@
 """Network geometry: PTDF, contingencies (each carrying its own line limits),
 and the network model that assembles them into the stacked constraint system.
 
-Notation follows the FTR pitch memo:
+Notation follows the journal draft:
 
-* ``K``  -- PTDF, maps nodal injections ``q`` to monitored flows.
-* ``A = [K; -K]`` -- the stacked constraint matrix.  The first ``C*ell`` rows are
-  the upper-limit constraints ``Kq <= b_upper``; the next ``C*ell`` are the
-  lower-limit constraints ``-Kq <= -b_lower``.  Rows within a block run over
+* ``A``  -- node-branch incidence matrix (``(n, ell)``, entries in
+  ``{-1, 0, +1}``), the *physical* topology.
+* ``H_c`` -- PTDF under contingency ``c``, mapping nodal injections ``q`` to
+  monitored flows; ``H`` stacks them over the contingencies in a fixed order.
+* ``K = [H; -H]`` -- the stacked constraint matrix.  The first ``C*ell`` rows are
+  the upper-limit constraints ``Hq <= b_upper``; the next ``C*ell`` are the
+  lower-limit constraints ``-Hq <= -b_lower``.  Rows within a block run over
   ``(contingency, element)`` in contingency order, then element.
 
 A ``NetworkModel`` owns its geometry: a network plus a list of contingencies,
 each of which carries the line limits enforced *under that contingency*.  It
-derives ``A`` and the limit vector ``b``.  DAM and FTR are two such models,
-defined independently; comparison of their per-row duals needs :func:`embed` /
-:func:`align` to put them on a common row index (see those for the caveat that
-this requires common PTDFs).
+derives ``K`` and the limit vector ``b``.  The FTR/SFT model ``f`` and the DAM
+model ``g`` are two such models, defined independently; comparison of their
+per-row duals needs :func:`embed` / :func:`align` to put them on a common row
+index (see those for the caveat that this requires common PTDFs).
 """
 
 from __future__ import annotations
@@ -33,23 +36,23 @@ ContingencyKey = int | tuple[int, ...] | None
 # ----------------------------------------------------------------------------
 # PTDF and physical topology
 # ----------------------------------------------------------------------------
-def is_connected(inc: np.ndarray, key: ContingencyKey = None) -> bool:
+def is_connected(A: np.ndarray, key: ContingencyKey = None) -> bool:
     """Whether the network graph is connected once ``key``'s elements are removed.
 
     Edges are incidence columns with two nonzero endpoints; a union-find over them
     is connected iff every node lands in one component.  Equivalently, the DC
-    bus-susceptance matrix ``inc diag(b) inc^T`` is a graph Laplacian whose
+    bus-susceptance matrix ``A diag(b) A^T`` is a graph Laplacian whose
     rank is ``n - (#components)``, so dropping the slack row/col leaves an
     invertible ``(n-1)x(n-1)`` block exactly when this returns ``True``.  Outaging
     a *bridge* (``is_connected`` ``False``) would island the network and make the
     PTDF inverse singular -- such N-1 outages are skipped, not solved.
     """
-    inc = np.asarray(inc, dtype=float)
-    n, ell = inc.shape
+    A = np.asarray(A, dtype=float)
+    n, ell = A.shape
     if key is not None:
         out = [int(key)] if isinstance(key, (int, np.integer)) else list(key)
-        inc = inc.copy()
-        inc[:, out] = 0.0
+        A = A.copy()
+        A[:, out] = 0.0
 
     parent = list(range(n))
 
@@ -60,7 +63,7 @@ def is_connected(inc: np.ndarray, key: ContingencyKey = None) -> bool:
         return a
 
     for j in range(ell):
-        nz = np.nonzero(inc[:, j])[0]
+        nz = np.nonzero(A[:, j])[0]
         for k in nz[1:]:
             ra, rk = find(int(nz[0])), find(int(k))
             if ra != rk:
@@ -70,9 +73,9 @@ def is_connected(inc: np.ndarray, key: ContingencyKey = None) -> bool:
 
 
 def compute_ptdf(
-    inc: np.ndarray, x: np.ndarray, slack_idx: int, tap: np.ndarray | None = None
+    A: np.ndarray, x: np.ndarray, slack_idx: int, tap: np.ndarray | None = None
 ) -> np.ndarray:
-    """DC PTDF ``K`` (``(ell, n)``) for incidence ``inc`` (``(n, ell)``, entries
+    """DC PTDF ``H`` (``(ell, n)``) for incidence ``A`` (``(n, ell)``, entries
     in ``{-1, 0, +1}``), reactances ``x`` (``(ell,)``), and a slack bus.
 
     ``tap`` is an optional per-element off-nominal magnitude ratio (default ones).
@@ -81,12 +84,12 @@ def compute_ptdf(
     ``y_line = diag(1/(x t))``.  Phase-shift taps are a separate additive flow
     offset, not a PTDF change, and are absent from the data we load.
     """
-    inc = np.asarray(inc, dtype=float)
+    A = np.asarray(A, dtype=float)
     x = np.asarray(x, dtype=float)
-    n = inc.shape[0]
-    tap = np.ones(inc.shape[1]) if tap is None else np.asarray(tap, dtype=float)
+    n = A.shape[0]
+    tap = np.ones(A.shape[1]) if tap is None else np.asarray(tap, dtype=float)
 
-    if not is_connected(inc):
+    if not is_connected(A):
         raise ValueError(
             "network is disconnected (islanded): the reduced bus-susceptance "
             "matrix is singular.  An N-1 outage of a bridge element causes this; "
@@ -94,16 +97,16 @@ def compute_ptdf(
         )
 
     y_line = np.diag(1.0 / (x * tap))
-    y_bus = inc @ y_line @ inc.T
+    y_bus = A @ y_line @ A.T
     keep = np.delete(np.eye(n), slack_idx, axis=0)  # drop slack row
-    return y_line @ inc.T @ keep.T @ np.linalg.inv(keep @ y_bus @ keep.T) @ keep
+    return y_line @ A.T @ keep.T @ np.linalg.inv(keep @ y_bus @ keep.T) @ keep
 
 
 @dataclass(frozen=True)
 class PhysicalNetwork:
     """Physical topology common to every contingency."""
 
-    inc: np.ndarray  # (n, ell) incidence, node x line
+    A: np.ndarray  # (n, ell) node-branch incidence, node x line
     x: np.ndarray  # (ell,) reactances
     slack_idx: int = -1
     node_names: np.ndarray | None = None
@@ -112,21 +115,22 @@ class PhysicalNetwork:
 
     @property
     def n_nodes(self) -> int:
-        return self.inc.shape[0]
+        return self.A.shape[0]
 
     @property
     def n_elements(self) -> int:
-        return self.inc.shape[1]
+        return self.A.shape[1]
 
     def ptdf(self, key: ContingencyKey = None) -> np.ndarray:
-        """PTDF with the contingency's outaged elements removed (their incidence
-        columns zeroed, so they carry no flow).  ``key`` is a contingency key:
-        ``None`` (base), an ``int`` element, or a tuple of element indices."""
-        inc = np.array(self.inc, dtype=float, copy=True)
+        """PTDF ``H_c`` with the contingency's outaged elements removed (their
+        incidence columns zeroed, so they carry no flow).  ``key`` is a
+        contingency key: ``None`` (base), an ``int`` element, or a tuple of
+        element indices."""
+        A = np.array(self.A, dtype=float, copy=True)
         if key is not None:
             out = [int(key)] if isinstance(key, (int, np.integer)) else list(key)
-            inc[:, out] = 0.0
-        return compute_ptdf(inc, self.x, self.slack_idx, self.tap)
+            A[:, out] = 0.0
+        return compute_ptdf(A, self.x, self.slack_idx, self.tap)
 
 
 def contingency_label(key: ContingencyKey, element_names=None) -> str:
@@ -171,13 +175,13 @@ class Contingency:
 @dataclass(frozen=True)
 class NetworkModel:
     """A network model owns its geometry.  Build it with :meth:`build` from a
-    network and a list of :class:`Contingency`; it assembles ``A = [K; -K]`` and
+    network and a list of :class:`Contingency`; it assembles ``K = [H; -H]`` and
     the stacked limit vector ``b``.  ``b`` and any per-row vector (a certificate
-    ``y``, duals ``mu``) line up entrywise over the rows of ``A``."""
+    ``y``, duals ``mu``) line up entrywise over the rows of ``K``."""
 
     network: PhysicalNetwork
     contingencies: tuple[Contingency, ...]
-    A: np.ndarray  # (2 * C * ell, n), dense
+    K: np.ndarray  # (2 * C * ell, n), dense
     b: np.ndarray  # (2 * C * ell,) limits; +inf marks an unmonitored row
 
     @classmethod
@@ -185,15 +189,15 @@ class NetworkModel:
         cls, network: PhysicalNetwork, contingencies: Iterable[Contingency]
     ) -> NetworkModel:
         conts = tuple(contingencies)
-        k = np.vstack([network.ptdf(c.key) for c in conts])
-        A = np.vstack([k, -k])
+        H = np.vstack([network.ptdf(c.key) for c in conts])
+        K = np.vstack([H, -H])
         b = np.concatenate(
             [
                 np.concatenate([c.upper for c in conts]),
                 np.concatenate([c.lower for c in conts]),
             ]
         )
-        return cls(network=network, contingencies=conts, A=A, b=b)
+        return cls(network=network, contingencies=conts, K=K, b=b)
 
     @property
     def keys(self) -> list[ContingencyKey]:
@@ -205,7 +209,13 @@ class NetworkModel:
 
     @property
     def n_rows(self) -> int:
-        return self.A.shape[0]
+        return self.K.shape[0]
+
+    @property
+    def H(self) -> np.ndarray:
+        """Stacked PTDF -- the upper half of ``K = [H; -H]``, one block of ``ell``
+        rows per contingency in :attr:`keys` order."""
+        return self.K[: self.n_rows // 2]
 
     @property
     def active(self) -> np.ndarray:
@@ -222,9 +232,9 @@ class NetworkModel:
         return np.arange(half + s, half + s + self.ell)
 
     def labels(self) -> pl.DataFrame:
-        """Per-constraint identity -- ``constraint`` (the row index into ``A``/
+        """Per-constraint identity -- ``constraint`` (the row index into ``K``/
         ``b``/``mu``) with its ``(contingency, element, side)`` -- for output
-        tables.  Each row of ``A`` is one constraint ``A[i] q <= b[i]``."""
+        tables.  Each row of ``K`` is one constraint ``K[i] q <= b[i]``."""
         ell = self.ell
         names = self.network.element_names
         conts = [

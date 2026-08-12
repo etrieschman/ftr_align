@@ -23,14 +23,16 @@ def alignment_summary(
 ) -> pl.DataFrame:
     """Table II: one row per run with ``MS_DAM``, ``Delta``, ``eta``.
 
-    ``runs`` yields ``(labels, sol_f, sol_g)`` where ``labels`` is metadata
-    (e.g. ``{"model_difference": ..., "pattern": ...}``)."""
+    ``runs`` yields ``(labels, sol_f, sol_g)`` -- the support solutions for the
+    FTR model ``f`` and the DAM model ``g``, in that order -- where ``labels`` is
+    metadata (e.g. ``{"model_difference": ..., "pattern": ...}``).  Merchandising
+    surplus is ``h(g;y)`` and the alignment gap is ``Delta = h(f;y) - h(g;y)``."""
     rows = [
         {
             **labels,
-            "MS_DAM": sol_f.value,
-            "Delta": sol_g.value - sol_f.value,
-            "eta": None if abs(sol_f.value) < EPS else sol_g.value / sol_f.value,
+            "MS_DAM": sol_g.value,
+            "Delta": sol_f.value - sol_g.value,
+            "eta": None if abs(sol_g.value) < EPS else sol_f.value / sol_g.value,
         }
         for labels, sol_f, sol_g in runs
     ]
@@ -38,16 +40,17 @@ def alignment_summary(
 
 
 def dual_summary(
-    dam: NetworkModel,
+    f: NetworkModel,
     sol_f: SupportSolution,
-    ftr: NetworkModel,
+    g: NetworkModel,
     sol_g: SupportSolution,
     labels: dict | None = None,
 ) -> pl.DataFrame:
-    """Table III: signed net duals ``mu_f`` and ``mu_g`` per (contingency,
-    element), joined.  ``labels`` adds constant metadata columns."""
-    f = net_dual(dam, sol_f.mu).rename({"mu": "mu_f"})
-    g = net_dual(ftr, sol_g.mu).rename({"mu": "mu_g"})
+    """Table III: signed net duals ``mu_f`` (FTR model) and ``mu_g`` (DAM model)
+    per (contingency, element), joined.  ``labels`` adds constant metadata
+    columns."""
+    f = net_dual(f, sol_f.mu).rename({"mu": "mu_f"})
+    g = net_dual(g, sol_g.mu).rename({"mu": "mu_g"})
     out = f.join(g, on=["contingency", "element"], how="full", coalesce=True)
     if labels:
         out = out.with_columns(**{k: pl.lit(v) for k, v in labels.items()})

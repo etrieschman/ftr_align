@@ -11,8 +11,9 @@ from ftr_align.cases import toy
 
 CLEAR_SOLVER = {"solver": "CLARABEL"}
 
-# signed net dual mu = mu_upper - mu_lower, keyed (contingency_label, element)
+# signed net dual mu = mu_upper - mu_lower, keyed (contingency_label, element).
 # PowerUp Table III; "B" -> base.  Values rounded as printed; compared with abs=2.
+# Each entry is (DAM model g, FTR model f) -- the paper's column order.
 TABLE_III = {
     ("derate", "(a)"): ({("base", "SL"): 435}, {("base", "SL"): 435}),
     ("derate", "(b)"): ({("base", "SC"): 217}, {("base", "SC"): 217}),
@@ -42,16 +43,16 @@ def _as_dict(df) -> dict:
 @pytest.mark.parametrize("key", list(TABLE_III))
 def test_table_iii(key):
     variation, scenario = key
-    exp_f, exp_g = TABLE_III[key]
-    dam_model, ftr_model = toy.MODELS[variation]
-    dam = clear_dam(dam_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
+    exp_g, exp_f = TABLE_III[key]
+    f_model, g_model = toy.MODELS[variation]
+    dam = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
 
-    f = SupportProblem(dam_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    g = SupportProblem(ftr_model, dam.direction).solve(solver=CLEAR_SOLVER)
-    got_f = _as_dict(net_dual(dam_model, f.mu))
-    got_g = _as_dict(net_dual(ftr_model, g.mu))
+    sol_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    sol_f = SupportProblem(f_model, dam.direction).solve(solver=CLEAR_SOLVER)
+    got_g = _as_dict(net_dual(g_model, sol_g.mu))
+    got_f = _as_dict(net_dual(f_model, sol_f.mu))
 
-    for exp, got in [(exp_f, got_f), (exp_g, got_g)]:
+    for exp, got in [(exp_g, got_g), (exp_f, got_f)]:
         assert set(got) == set(exp)
         for cell, val in exp.items():
             assert got[cell] == pytest.approx(val, abs=2)
@@ -59,30 +60,44 @@ def test_table_iii(key):
 
 def test_toy_duals_are_unique():
     """The 2-D toy has a unique support dual: robust ranges collapse."""
-    dam_model, ftr_model = toy.MODELS["dam_outage"]
-    dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
-    for model in (dam_model, ftr_model):
+    f_model, g_model = toy.MODELS["dam_outage"]
+    dam = clear_dam(g_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
+    for model in (f_model, g_model):
         lo, hi = robust_bounds(SupportProblem(model, dam.direction), solver=CLEAR_SOLVER)
         assert np.allclose(lo, hi, atol=1e-4)
 
 
 def test_classification():
-    dam_model, _ = toy.MODELS["derate"]
-    dam = clear_dam(dam_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
-    lo, hi = robust_bounds(SupportProblem(dam_model, dam.direction), solver=CLEAR_SOLVER)
+    _, g_model = toy.MODELS["derate"]
+    dam = clear_dam(g_model, toy.SCENARIOS["(a)"], solver=CLEAR_SOLVER)
+    lo, hi = robust_bounds(SupportProblem(g_model, dam.direction), solver=CLEAR_SOLVER)
     classes = classify(lo, hi)
     # scenario (a): exactly the base:SL upper row binds, nothing degenerate
     assert classes.count("binding") == 1
     assert "degenerate" not in classes
 
 
-def test_discrepancy_signs():
-    # extra_ftr: FTR enforces an extra contingency -> tighter -> D_minus
-    dam_model, ftr_model = toy.MODELS["extra_ftr"]
-    d = discrepancy(dam_model, ftr_model)
-    assert len(d["D_minus"]) > 0 and len(d["D_plus"]) == 0
+def test_discrepancy_kinds_and_modes():
+    """prop:kinds -- each disagreeing row is a level or coverage difference, and
+    feeds exactly one failure mode (the looser model's)."""
+    # extra_ftr: f enforces a contingency g does not -> coverage difference, and
+    # f is the tighter model there, so it feeds V.
+    d = discrepancy(*toy.MODELS["extra_ftr"])
+    assert len(d["coverage_V"]) > 0
+    assert all(len(d[k]) == 0 for k in ("coverage_U", "level_U", "level_V"))
 
-    # dam_outage: DAM enforces an extra contingency -> FTR looser -> D_plus
-    dam_model, ftr_model = toy.MODELS["dam_outage"]
-    d = discrepancy(dam_model, ftr_model)
-    assert len(d["D_plus"]) > 0 and len(d["D_minus"]) == 0
+    # dam_outage: g enforces a contingency f does not -> f looser -> feeds U.
+    d = discrepancy(*toy.MODELS["dam_outage"])
+    assert len(d["coverage_U"]) > 0
+    assert all(len(d[k]) == 0 for k in ("coverage_V", "level_U", "level_V"))
+
+    # derate: both enforce the base case, f at 0.75 of g -> level difference
+    # feeding V, with no coverage difference anywhere.
+    d = discrepancy(*toy.MODELS["derate"])
+    assert len(d["level_V"]) > 0
+    assert all(len(d[k]) == 0 for k in ("level_U", "coverage_U", "coverage_V"))
+
+    # mixed: a level difference feeding V stacked on a coverage difference
+    # feeding U -- both failure modes positive at once (the T2 headline).
+    d = discrepancy(*toy.MODELS["mixed"])
+    assert len(d["level_V"]) > 0 and len(d["coverage_U"]) > 0

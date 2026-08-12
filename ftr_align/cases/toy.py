@@ -9,7 +9,8 @@ constants:
 
   * ``SCENARIOS`` -- the three DAM clearing scenarios (a)/(b)/(c) as
     ``DamInstance``s (built with :func:`dam_instance`).
-  * ``MODELS`` -- the three DAM/FTR model differences as ``(dam, ftr)`` pairs.
+  * ``MODELS`` -- the model differences as ``(f, g)`` pairs: the FTR/SFT model
+    ``f`` first, the DAM model ``g`` second, matching ``Delta(f, g; y)``.
     Both share ``NETWORK`` and differ only in the contingencies each enforces
     (and a 0.75 FTR limit derate in ``"derate"``).
   * ``REDUNDANT_MODELS`` -- the same three differences on the double-circuit
@@ -32,7 +33,7 @@ INC = np.array([[1, 0, 1], [0, 1, -1], [-1, -1, 0]], dtype=float)
 X = np.array([1.0, 1.0, 1.0])
 BASE_LIMITS = np.array([75.0, 300.0, 25.0])
 NETWORK = PhysicalNetwork(
-    inc=INC, x=X, slack_idx=-1, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
+    A=INC, x=X, slack_idx=-1, node_names=NODE_NAMES, element_names=ELEMENT_NAMES
 )
 
 # DAM bid structure shared by every clearing scenario
@@ -50,7 +51,7 @@ REDUNDANT_INC = np.array([[1, 1, 0, 1], [0, 0, 1, -1], [-1, -1, -1, 0]], dtype=f
 REDUNDANT_X = np.array([2.0, 2.0, 1.0, 1.0])
 REDUNDANT_LIMITS = np.array([37.5, 37.5, 300.0, 25.0])
 REDUNDANT_NETWORK = PhysicalNetwork(
-    inc=REDUNDANT_INC,
+    A=REDUNDANT_INC,
     x=REDUNDANT_X,
     slack_idx=-1,
     node_names=NODE_NAMES,
@@ -81,51 +82,51 @@ SCENARIOS: dict[str, DamInstance] = {
 _BASE = Contingency(None, BASE_LIMITS)  # base case at full limits
 MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
     "derate": (
-        NetworkModel.build(NETWORK, [_BASE]),
         NetworkModel.build(NETWORK, [Contingency(None, 0.75 * BASE_LIMITS)]),
+        NetworkModel.build(NETWORK, [_BASE]),
     ),
     "extra_ftr": (
-        NetworkModel.build(NETWORK, [_BASE]),
         NetworkModel.build(NETWORK, [_BASE, Contingency(SL, BASE_LIMITS)]),
+        NetworkModel.build(NETWORK, [_BASE]),
     ),
     "dam_outage": (
-        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
         NetworkModel.build(NETWORK, [_BASE]),
+        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
     ),
     "mixed": (
-        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
         NetworkModel.build(NETWORK, [Contingency(None, 0.75 * BASE_LIMITS)]),
+        NetworkModel.build(NETWORK, [_BASE, Contingency(SC, BASE_LIMITS)]),
     ),
 }
 
 _REDUNDANT_BASE = Contingency(None, REDUNDANT_LIMITS)
 REDUNDANT_MODELS: dict[str, tuple[NetworkModel, NetworkModel]] = {
     "derate": (
-        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
         NetworkModel.build(
             REDUNDANT_NETWORK, [Contingency(None, 0.75 * REDUNDANT_LIMITS)]
         ),
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
     ),
     "extra_ftr": (
-        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
         NetworkModel.build(
             REDUNDANT_NETWORK,
             [_REDUNDANT_BASE, Contingency((0, 1), REDUNDANT_LIMITS)],
         ),
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
     ),
     "dam_outage": (
+        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
         NetworkModel.build(
             REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
         ),
-        NetworkModel.build(REDUNDANT_NETWORK, [_REDUNDANT_BASE]),
     ),
     "mixed": (
         NetworkModel.build(
-            REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
-        ),
-        NetworkModel.build(
             REDUNDANT_NETWORK,
             [Contingency(None, 0.75 * REDUNDANT_LIMITS)],
+        ),
+        NetworkModel.build(
+            REDUNDANT_NETWORK, [_REDUNDANT_BASE, Contingency(3, REDUNDANT_LIMITS)]
         ),
     ),
 }

@@ -11,9 +11,8 @@ from ftr_align.duality import (
     classify,
     marginal_repair,
     robust_bounds,
-    shapley_repair,
-    support_index,
-    support_set,
+    J_star_from_bounds,
+    J_star,
     trade_matrix,
     trade_space,
 )
@@ -60,21 +59,21 @@ for interval in tqdm(intervals):
     dam_sol = clear_dam(
         dam_model, rts_gmlc.dam_instance(interval=interval, network=net), solver=SOLVER
     )
-    sol_f = SupportProblem(dam_model, dam_sol.direction).solve(solver=SOLVER)
-    sol_g = SupportProblem(ftr_model, dam_sol.direction).solve(solver=SOLVER)
+    sol_f = SupportProblem(ftr_model, dam_sol.direction).solve(solver=SOLVER)
+    sol_g = SupportProblem(dam_model, dam_sol.direction).solve(solver=SOLVER)
     interval_rows.append(
         {
             "interval": interval,
-            "MS_DAM": sol_f.value,
-            "Delta": sol_g.value - sol_f.value,
-            "eta": None if abs(sol_f.value) < EPS else sol_g.value / sol_f.value,
+            "MS_DAM": sol_g.value,
+            "Delta": sol_f.value - sol_g.value,
+            "eta": None if abs(sol_g.value) < EPS else sol_f.value / sol_g.value,
         }
     )
     dual_rows.append(
         dual_summary(
-            dam_model,
-            sol_f,
             ftr_model,
+            sol_f,
+            dam_model,
             sol_g,
             labels={"interval": interval},
         )
@@ -96,11 +95,11 @@ dam_sol = clear_dam(
 dam_prob = SupportProblem(dam_model, dam_sol.direction)
 ftr_prob = SupportProblem(ftr_model, dam_sol.direction)
 
-# inspect DAM model.  support_set gets I(b;d) from one CLARABEL solve (strict
+# inspect DAM model.  J_star gets J*(b;y) from one CLARABEL solve (strict
 # complementarity) -- ~50-130x cheaper than the robust_bounds face-LP loop, which
 # we'd need only for lo/hi ranges (classify).  Pass index to skip it in attribution.
 dam_dual = dam_prob.solve(solver={"solver": "CLARABEL"})
-index = support_set(dam_prob)
+index = J_star(dam_prob)
 C = trade_matrix(dam_prob, index)
 D = trade_space(C)
 print("~~~~~~~~ DAM model")
@@ -113,7 +112,7 @@ display(dam_attr)
 
 # inspect FTR model
 ftr_dual = ftr_prob.solve(solver={"solver": "CLARABEL"})
-index = support_set(ftr_prob)
+index = J_star(ftr_prob)
 C = trade_matrix(ftr_prob, index)
 D = trade_space(C)
 print("\n~~~~~~~~ FTR model")
@@ -124,17 +123,9 @@ ftr_attr = attribution_blocks(ftr_prob, mu=ftr_dual.mu, index=index)
 display(ftr_attr)
 
 
-# Repair: per-block attribution of the gap Δ = h(g) - h(f).  marginal_repair =
-# each block's standalone effect (not additive when drivers mask each other);
-# shapley_repair = order-averaged, additive (sums to Δ).
+# Repair: per-block attribution of the gap Δ(f,g;y) = h(f;y) - h(g;y).  Each
+# block's standalone effect -- not additive when the two failure modes mask each
+# other (prop:repair_nonadditive).
 print("\n~~~~~~~~ Repair of gap")
-(
-    marginal_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER).join(
-        shapley_repair(dam_model, ftr_model, dam_sol.direction, solver=SOLVER),
-        on=["driver", "members", "idxs", "repair_idxs"],
-        how="full",
-        coalesce=True,
-        suffix="_shapley",
-    )
-)
+marginal_repair(ftr_model, dam_model, dam_sol.direction, solver=SOLVER)
 # %%

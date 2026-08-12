@@ -1,22 +1,20 @@
 """Dual-face analysis of a support solve.
 
-Given a direction ``d``, the optimal dual face ``Lambda*(b;d)`` is the set of
+Given a direction ``d``, the optimal dual face ``Lambda*(b;y)`` is the set of
 certificates attaining the support value.  It need not be a singleton, so
 per-constraint multipliers are characterised by *robust ranges* ``[mu_lo,
 mu_hi]`` over the face -- invariant to which dual optimum a solver returns --
 which classify each row binding / degenerate / slack.
 
-Over the support ``I(b;d)`` we build the trade space ``D = ker C`` (weight
-shifts that change neither the aggregate congestion price nor the support value)
-and partition ``I`` into matroid-connectivity attribution blocks with
-face-invariant totals ``W_{G_r}``.
+Over the dual-optimal support ``J*(b;y)`` we build the trade space
+``D(b;y) = ker C(b;y)`` (weight shifts that change neither the aggregate
+congestion price nor the support value) and partition ``J*`` into
+matroid-connectivity attribution blocks with face-invariant totals ``W_{J_r}``.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-from itertools import combinations
-from math import factorial
 from typing import Literal
 
 import cvxpy as cp
@@ -25,7 +23,7 @@ import polars as pl
 from scipy.linalg import null_space, qr
 
 from .network import NetworkModel, align, contingency_label, element_label
-from .solve import SupportProblem, dual_feasible, support_objective
+from .solve import Lambda_star, SupportProblem, support_objective
 
 FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
 CLASS_TOL = 1e-4  # zero threshold for classification; must exceed FACE_TOL leak
@@ -41,11 +39,11 @@ def robust_bounds(
     hi_only: bool = False,
     tol: float = FACE_TOL,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face ``Lambda(d)`` cap
-    ``{b^T mu == h*}`` -- the robust multiplier range, invariant to which dual
-    optimum a solver returns.  Rows outside the support get ``(0, 0)``; classify
-    with :func:`classify`.  ``hi_only`` skips the ``mu_lo`` solves (e.g. when the
-    support alone is wanted -- though :func:`support_set` is the cheaper way there).
+    """Per-row ``[mu_lo, mu_hi]`` over the optimal dual face ``Lambda*(b;y)`` --
+    the robust multiplier range, invariant to which dual optimum a solver
+    returns.  Rows outside the support get ``(0, 0)``; classify with
+    :func:`classify`.  ``hi_only`` skips the ``mu_lo`` solves (e.g. when the
+    support alone is wanted -- though :func:`J_star` is the cheaper way there).
 
     Two exact accelerations: (1) ``mu`` ranges only over rows binding at the
     primal optimum, since by complementary slackness every other row is 0 across
@@ -77,23 +75,20 @@ def robust_bounds(
     # these can have nonzero bounds and (b) restricting the face LP's mu to them
     # is exact.  Relative bind_tol since b is large at RTS scale.
     bind_tol = tol * np.maximum(1.0, np.abs(data.b))
-    candidates = np.where(active & (data.b - data.A @ sol.q <= bind_tol))[0]
+    candidates = np.where(active & (data.b - data.K @ sol.q <= bind_tol))[0]
 
-    lo = np.zeros(data.A.shape[0])
-    hi = np.zeros(data.A.shape[0])
+    lo = np.zeros(data.K.shape[0])
+    hi = np.zeros(data.K.shape[0])
     if candidates.size == 0:
         return lo, hi
 
     # One compiled problem reused across rows and senses: a Parameter objective
     # selects which mu to extremize, so cvxpy canonicalizes the face once instead
     # of rebuilding an LP per row.  mu ranges only over the candidate rows.
-    A_c, b_c = data.A[candidates], data.b[candidates]
+    K_c, b_c = data.K[candidates], data.b[candidates]
     mu = cp.Variable(candidates.size, nonneg=True, name="mu")
     s = cp.Variable(name="s")
-    face = dual_feasible(A_c, mu, s, data.direction) + [
-        support_objective(b_c, mu) <= value + tol,
-        support_objective(b_c, mu) >= value - tol,
-    ]
+    face = Lambda_star(K_c, b_c, mu, s, data.direction, value, tol)
     select = cp.Parameter(candidates.size, name="select")
     face_prob = cp.Problem(cp.Maximize(select @ mu), face)
 
@@ -128,22 +123,23 @@ def classify(
     return out
 
 
-def support_index(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
-    """``I(b;d)``: rows carrying positive weight in some optimal certificate
-    (``mu_hi > 0``) -- binding or degenerate.  Only these carry attribution."""
+def J_star_from_bounds(hi: np.ndarray, tol: float = CLASS_TOL) -> np.ndarray:
+    """``J*(b;y)`` read off a :func:`robust_bounds` ``hi`` vector: rows carrying
+    positive weight in some optimal certificate (``mu_hi > 0``) -- binding or
+    degenerate.  Only these carry attribution."""
     return np.where(hi > tol)[0]
 
 
-def support_set(problem: SupportProblem, tol: float = CLASS_TOL) -> np.ndarray:
-    """``I(b;d)`` from a single interior-point solve -- ~100x cheaper than the
-    :func:`robust_bounds` face-LP loop, which is needed only for the lo/hi ranges
-    (:func:`classify`).
+def J_star(problem: SupportProblem, tol: float = CLASS_TOL) -> np.ndarray:
+    """``J*(b;y)``, the dual-optimal support, from a single interior-point solve
+    -- ~100x cheaper than the :func:`robust_bounds` face-LP loop, which is needed
+    only for the lo/hi ranges (:func:`classify`).
 
     By Goldman-Tucker strict complementarity an interior-point method converges
     to the analytic center of the optimal dual face, whose support is *exactly*
-    ``I``.  **CLARABEL is required and not overridable**: the result is exact only
-    for an interior-point solver -- a simplex vertex (e.g. HiGHS) gives a strict
-    subset of ``I`` (it misses degenerate rows)."""
+    ``J*``.  **CLARABEL is required and not overridable**: the result is exact
+    only for an interior-point solver -- a simplex vertex (e.g. HiGHS) gives a
+    strict subset of ``J*`` (it misses degenerate rows)."""
     mu = problem.solve(solver={"solver": "CLARABEL"}).mu
     return np.where(mu > tol)[0]
 
@@ -173,17 +169,17 @@ def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
 # Trade space and attribution blocks
 # ----------------------------------------------------------------------------
 def trade_matrix(problem: SupportProblem, index: np.ndarray) -> np.ndarray:
-    """``C`` with columns ``c_i = [a_bar_i; b_i]`` for ``i in index``, where
-    ``a_bar_i`` is row ``i`` of ``A`` with its energy (mean) component removed.
+    """``C(b;y)`` with columns ``c_i = [k_bar_i; b_i]`` for ``i in index``, where
+    ``k_bar_i`` is row ``i`` of ``K`` with its energy (mean) component removed.
     Shape ``(n+1, |index|)``."""
-    A, b = problem.data.A, problem.data.b
-    cols = [np.concatenate([A[i] - A[i].mean(), [b[i]]]) for i in index]
-    return np.array(cols).T if cols else np.zeros((A.shape[1] + 1, 0))
+    K, b = problem.data.K, problem.data.b
+    cols = [np.concatenate([K[i] - K[i].mean(), [b[i]]]) for i in index]
+    return np.array(cols).T if cols else np.zeros((K.shape[1] + 1, 0))
 
 
 def trade_space(C: np.ndarray, tol: float = RANK_TOL) -> np.ndarray:
-    """``D(b;d) = ker C``: weight trades over the support that preserve both the
-    aggregate congestion price and the support value.  Columns are a basis."""
+    """``D(b;y) = ker C(b;y)``: weight trades over the support that preserve both
+    the aggregate congestion price and the support value.  Columns are a basis."""
     if C.shape[1] == 0:
         return np.zeros((0, 0))
     return null_space(C, rcond=tol)
@@ -235,15 +231,15 @@ def attribution_blocks(
     solver=None,
 ) -> pl.DataFrame:
     """Attribution blocks over the support with per-block totals
-    ``W_{G_r} = sum_{i in G_r} b_i mu_i`` (invariant across the optimal face).
+    ``W_{J_r} = sum_{i in J_r} b_i mu_i`` (invariant across the optimal face).
 
-    The support ``index = I(b;d)`` defaults to :func:`support_set` (one CLARABEL
+    The support ``index = J*(b;y)`` defaults to :func:`J_star` (one CLARABEL
     solve); pass a precomputed ``index`` to reuse it.  ``mu`` defaults to a support
     solve on ``solver`` (any optimal dual works -- ``W`` is face-invariant)."""
     if mu is None:
         mu = problem.solve(solver=solver).mu
     if index is None:
-        index = support_set(problem)  # CLARABEL: support via strict complementarity
+        index = J_star(problem)  # CLARABEL: support via strict complementarity
     blocks = connected_blocks(trade_matrix(problem, index))
 
     labels = problem.model.labels()
@@ -271,17 +267,30 @@ def attribution_blocks(
     )
 
 
-def discrepancy(dam: NetworkModel, ftr: NetworkModel) -> dict[str, np.ndarray]:
-    """Rows where FTR and DAM limits differ (pitch sec. 3.2), on a common index.
+def discrepancy(f: NetworkModel, g: NetworkModel) -> dict[str, np.ndarray]:
+    """Rows where the FTR model ``f`` and the DAM model ``g`` disagree, split by
+    kind and by the failure mode each feeds (``prop:kinds``).  Aligned internally.
 
-    The two models are aligned internally.  ``D_plus`` = rows where FTR is looser
-    (``g > f``, underfunding-driving); ``D_minus`` = FTR tighter (``g < f``,
-    hedging-inefficiency-driving).  ``+inf`` (unmonitored) is looser than any
-    finite limit.
+    A row disagrees in exactly one of two ways.  A *level* difference has both
+    limits finite with ``f_i = alpha_i g_i``, ``alpha_i != 1``; a *coverage*
+    difference has one model at ``+inf`` (unmonitored, hence looser than any
+    finite limit).  Either way the looser model is the one that loses value on
+    adopting the intersection, so ``f_i > g_i`` feeds ``U`` and ``f_i < g_i``
+    feeds ``V``.
+
+    Only level differences carry a nonzero floor (``cor:diagnosable``): an
+    infinite limit forces ``mu_i = 0``, so a coverage difference's whole
+    contribution is displaced value registered at other rows.
     """
-    dam_u, ftr_u = align(dam, ftr)
-    f, g = dam_u.b, ftr_u.b
-    return {"D_plus": np.where(g > f)[0], "D_minus": np.where(g < f)[0]}
+    f_u, g_u = align(f, g)
+    bf, bg = f_u.b, g_u.b
+    both_finite = np.isfinite(bf) & np.isfinite(bg)
+    return {
+        "level_U": np.where(both_finite & (bf > bg))[0],
+        "level_V": np.where(both_finite & (bf < bg))[0],
+        "coverage_U": np.where(~both_finite & (bf > bg))[0],
+        "coverage_V": np.where(~both_finite & (bf < bg))[0],
+    }
 
 
 _REPAIR_SCHEMA = {
@@ -294,82 +303,47 @@ _REPAIR_SCHEMA = {
 
 
 def marginal_repair(
-    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver=None
+    f: NetworkModel, g: NetworkModel, direction: np.ndarray, solver=None
 ) -> pl.DataFrame:
     """Standalone block-repair counterfactual (pitch sec. 3.2): for each gap
-    block, the change in ``h(g) - h(f)`` from repairing **only** that block's
-    differing rows (FTR -> DAM), measured from the original FTR.
+    block, the change in ``Delta = h(f;y) - h(g;y)`` from repairing **only** that
+    block's differing rows (``f`` -> ``g``), measured from the original ``f``.
 
-    Diagnostic, **not additive**: when both underfunding and hedging drivers are
-    present they interact (one block can mask another), so the marginal repairs
-    do not sum to the gap.  Use :func:`shapley_repair` for an additive split."""
-    ftr_u, f, g, blocks = _repair_blocks(dam, ftr, direction, solver)
-    h_g = SupportProblem(ftr_u, direction).solve(solver=solver).value
+    Diagnostic, **not additive**: when both failure modes are present they
+    interact (one block can mask another), so the marginal repairs do not sum to
+    the gap (``prop:repair_nonadditive``).
+
+    NOTE: this repairs toward ``g``, not toward the intersection ``f ^ g``, so it
+    is *not* the memo's ``U^(S)``, whose monotonicity relies on the one-signed
+    target.  Retargeting waits on ``meet``."""
+    f_u, bf, bg, blocks = _repair_blocks(f, g, direction, solver)
+    h_f = SupportProblem(f_u, direction).solve(solver=solver).value
 
     def reduction(rows: list[int]) -> float:
-        repaired = replace(ftr_u, b=_with(g, rows, f))
-        return h_g - SupportProblem(repaired, direction).solve(solver=solver).value
+        repaired = replace(f_u, b=_with(bf, rows, bg))
+        return h_f - SupportProblem(repaired, direction).solve(solver=solver).value
 
     records = [{**blk, "repair": reduction(blk["repair_idxs"])} for blk in blocks]
     return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
 
 
-def shapley_repair(
-    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver=None
-) -> pl.DataFrame:
-    """Shapley attribution of the gap ``Delta = h(g) - h(f)`` across gap blocks:
-    each block's repair averaged over all orders of repairing the others.
-
-    Unlike :func:`marginal_repair` these are **additive** -- they sum to
-    ``Delta`` -- and credit each block for the effect it has once masking blocks
-    are already repaired.  Costs ``2**(#blocks)`` support solves (fine at toy /
-    block-sparse scale; sample orderings for large block sets)."""
-    ftr_u, f, g, blocks = _repair_blocks(dam, ftr, direction, solver)
-    h_g = SupportProblem(ftr_u, direction).solve(solver=solver).value
-    n = len(blocks)
-
-    cache: dict[frozenset, float] = {}
-
-    def reduction(subset: frozenset) -> float:
-        if not subset:
-            return 0.0
-        if subset not in cache:
-            rows = [r for i in subset for r in blocks[i]["repair_idxs"]]
-            repaired = replace(ftr_u, b=_with(g, rows, f))
-            cache[subset] = (
-                h_g - SupportProblem(repaired, direction).solve(solver=solver).value
-            )
-        return cache[subset]
-
-    phi = [0.0] * n
-    for i in range(n):
-        others = [j for j in range(n) if j != i]
-        for k in range(len(others) + 1):
-            weight = factorial(k) * factorial(n - k - 1) / factorial(n)
-            for subset in combinations(others, k):
-                phi[i] += weight * (
-                    reduction(frozenset(subset + (i,))) - reduction(frozenset(subset))
-                )
-
-    records = [{**blk, "repair": phi[i]} for i, blk in enumerate(blocks)]
-    return pl.DataFrame(records, schema=_REPAIR_SCHEMA)
-
-
 def _repair_blocks(
-    dam: NetworkModel, ftr: NetworkModel, direction: np.ndarray, solver
+    f: NetworkModel, g: NetworkModel, direction: np.ndarray, solver
 ) -> tuple[NetworkModel, np.ndarray, np.ndarray, list[dict]]:
-    """Aligned ``ftr_u`` (plus its limits ``g`` and the DAM limits ``f``) and the
-    gap's repair blocks across both drivers.  Each block is an attribution block
-    of the relevant support whose differing rows (``repair_rows``) move the FTR
-    model toward the DAM model: ``underfunding`` blocks come from the DAM support
-    (rows where ``g > f``), ``hedging`` blocks from the FTR support (``g < f``).
-    Blocks with no differing rows are dropped."""
-    dam_u, ftr_u = align(dam, ftr)
-    f, g = dam_u.b, ftr_u.b
+    """Aligned ``f_u`` (plus its limits ``bf`` and the DAM limits ``bg``) and the
+    gap's repair blocks across both failure modes.  Each block is an attribution
+    block of the relevant support whose differing rows (``repair_idxs``) move the
+    FTR model toward the DAM model.  Blocks with no differing rows are dropped.
+
+    NOTE: ``U`` blocks are taken from the ``g`` support here, but
+    ``prop:block_underfunding`` decomposes ``U`` over the blocks of ``f`` (and
+    ``V`` over those of ``g``).  Reconciling that is step-3 work, not a rename."""
+    f_u, g_u = align(f, g)
+    bf, bg = f_u.b, g_u.b
     blocks = []
     for driver, model, differs in (
-        ("underfunding", dam_u, g > f),
-        ("hedging", ftr_u, g < f),
+        ("underfunding", g_u, bf > bg),
+        ("hedging", f_u, bf < bg),
     ):
         bl = attribution_blocks(SupportProblem(model, direction), solver=solver)
         for blk in bl.rows(named=True):
@@ -383,7 +357,7 @@ def _repair_blocks(
                         "repair_idxs": repair_rows,
                     }
                 )
-    return ftr_u, f, g, blocks
+    return f_u, bf, bg, blocks
 
 
 def _with(b: np.ndarray, rows: list[int], source: np.ndarray) -> np.ndarray:
