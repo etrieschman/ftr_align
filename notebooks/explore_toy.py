@@ -12,7 +12,7 @@ from ftr_align.duality import (
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import block_table, row_table, run_row
+from ftr_align.metrics import block_table, row_labels, row_table, run_row
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
@@ -167,3 +167,53 @@ print("\n~~~~~~~~ Per-constraint detail (V)")
 display(row_table(f_model, g_model, d, mode="V", solver=CLEAR))
 
 # %%
+
+# %%
+# -------------------------------------
+# GEOMETRY: the injection polytopes
+# -------------------------------------
+# At three nodes power balance leaves a 2-D injection space, so this picture is
+# exact -- not a projection.  Q(f^g) traces whichever model is tighter, which is
+# cor:canonical made visible.
+import matplotlib.pyplot as plt
+
+from ftr_align import meet
+from ftr_align.polytope import faces, polygon
+from ftr_align.viz import (
+    DAM_STYLE, FTR_STYLE, MEET_STYLE,
+    draw_optimum, draw_region, label_axes,
+)
+
+SCEN = "(a)"
+fig, axes = plt.subplots(1, len(toy.MODELS), figsize=(4.4 * len(toy.MODELS), 4.2))
+for ax, (case, (f_model, g_model)) in zip(axes, toy.MODELS.items()):
+    d = clear_dam(g_model, toy.SCENARIOS[SCEN], solver=CLEAR).direction
+    ax.set_xlim(-170, 170)
+    ax.set_ylim(-210, 210)
+    draw_region(ax, g_model, label=r"$\mathcal{Q}(g)$  DAM", **DAM_STYLE)
+    draw_region(ax, f_model, label=r"$\mathcal{Q}(f)$  FTR", **FTR_STYLE)
+    draw_region(ax, meet(f_model, g_model), label=r"$\mathcal{Q}(f \wedge g)$", **MEET_STYLE)
+    draw_optimum(ax, g_model, d, solver=CLEAR, **DAM_STYLE)
+    draw_optimum(ax, f_model, d, solver=CLEAR, **FTR_STYLE)
+    label_axes(ax, g_model)
+    ax.axhline(0, lw=0.4, c="k")
+    ax.axvline(0, lw=0.4, c="k")
+    ax.set_title(f"{case}  ({SCEN})")
+axes[0].legend(fontsize=8, loc="upper left", frameon=False)
+fig.tight_layout()
+
+# %%
+# -------------------------------------
+# REGIMES: every realizable active set
+# -------------------------------------
+# faces() enumerates the vertices of Q(b) with the rows tight at each and a
+# direction exposing it.  Vertices and normal-fan cones are dual, so this *is*
+# the list of active sets attainable at an optimum -- the d-sweep as a lookup
+# rather than a scan.  In 2-D they come back in cyclic order, i.e. sweep order.
+for case, (f_model, g_model) in toy.MODELS.items():
+    print(f"\n~~~~~~~~ {case}")
+    for name, model in (("f (FTR)", f_model), ("g (DAM)", g_model)):
+        print(f"  {name}: {len(faces(model))} vertices")
+        for face in faces(model):
+            rows = ", ".join(row_labels(model, face.rows))
+            print(f"    q={np.round(face.q, 1)}  tight={{{rows}}}")

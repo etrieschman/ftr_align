@@ -147,6 +147,15 @@ ftr_align/
                 (prop:block_underfunding), primal_invariant +
                 block_share_range, differences (level/coverage x U/V per
                 prop:kinds)
+  polytope.py   the V-representation of Q(b): free_basis / plane_system (a
+                basis T with 1^T T = 0; reduced normals are just K T),
+                polygon (exact 2-D outline by pairwise intersection -- no
+                interior point, no Qhull), faces (vertices + tight rows + an
+                exposing direction, general d via Qhull), is_bounded, hull_2d.
+                Guarded at MAX_NODES.
+  viz.py        3-node figures only: draw_region / draw_constraints /
+                draw_optimum / draw_halfplane / label_axes, composable onto one
+                axis.  No direction arrow -- fig_support_vi stays in TikZ.
   metrics.py    net_dual, row_labels, run_row (one flat record per (model pair,
                 direction) cell), row_table (per-constraint detail),
                 block_table, support_summary (the one-model counterpart of
@@ -260,6 +269,40 @@ circulation joining them — exactly the memo's claim that being in the same
 certificate is not a reason to aggregate. `outer_loop` is the contrast: a
 circulation binds four rows into one block.
 
+### Primal geometry (step 7)
+
+**Faces and normal-fan cones are dual.** A vertex of `Q(b)` corresponds to a
+full-dimensional normal cone, hence to a maximal *realizable active set*, and any
+direction interior to that cone exposes it. So `faces(model)` enumerates the
+regimes without reference to any `y`, and T5's sweep becomes a lookup. In 2-D the
+cyclic vertex order *is* the sweep order. `faces` returns the exposing direction
+as `Σ_{i∈rows} k_i` — a strictly positive combination of the cone's generators,
+so interior to it (tested: solving at that direction returns exactly that vertex).
+
+**Scale.** Upper Bound Theorem: a `d`-polytope with `m` facets has `~m^⌊d/2⌋`
+vertices, with `d = n − 1` after balance and `m = |J(b)|`. 3-node: `d=2, m=6`.
+5-node: `d=4, m=18 → ~324`. RTS: `d=72, m≈28,800 → ~10¹⁵⁷`. Contingencies are
+survivable; buses are not. Above `MAX_NODES` the *answer* is too big, not the
+computation — sample realized directions instead, which is a different and
+better-posed question. The guard says this in its error message.
+
+**Plotting needs no correction.** Substituting `q = T u` turns row `i` into
+`(Tᵀk_i)ᵀ u ≤ b_i`, so reduced normals are just `K T`; constraint lines are
+correct in *any* basis with `1ᵀT = 0`. Only an objective *direction* would need
+the covariant `Tᵀd`, and nothing draws one (`fig_support_vi` is TikZ). If a
+direction arrow is ever wanted on `(load served, q_S)` axes, put the slack on the
+node being eliminated (`C`) and the gradient reads straight off `d` as
+`(−d_L, d_S)`.
+
+**The slack is a labelling convention.** PTDF rows differ between slack
+conventions by a multiple of `1ᵀ`, which annihilates balanced injections — so
+changing it shifts `d` by a constant vector and leaves `Q(b)`, `h` and `μ`
+untouched (tested). Choosing the slack to suit a figure's axes is free.
+
+**Viz is 3-node only, by decision.** At more nodes two coordinates are a
+*projection*, whose boundary edges are not images of individual constraints — a
+different object, and one the 5-node work doesn't need.
+
 ### A finding from step 3: tolerances must scale with the *support values*
 
 Every attribution quantity — `U`, `V`, a repair value, a floor, a block share —
@@ -353,15 +396,8 @@ are **done**. Remaining, in order:
    cells, so sub/superadditive witnesses are *found* rather than constructed.
    The case file and notebook are **done** (see the validation below); what
    remains is the grid and the model pairs, i.e. numerical setup.
-7. **Search + viz, one tool.** Vertex enumeration of `Q(b)` gives active sets and
-   representative directions at any dimension; in 2-D, sorting the vertices
-   angularly *is* the `d`-sweep, so T5 and the paper figure come free. Guard at
-   `n_nodes > 7` plus a `max_vertices` cap. Above the guard, don't build a
-   sampler — the realized `dam_instance(interval)` sweep already samples the
-   right distribution for N1–N6.
-   Viz: `slice2d`/`polygon`/plot layer, defaulting to **projection** (shadow) for
-   `n > 3`, with bid bounds as an opt-in *overlay* (they are not network
-   feasibility). Port the styling from the old script, not its geometry.
+7. **Search + viz — done** (`polytope.py`, `viz.py`). What remains is using
+   them: T5's regime sweep is `faces(model)` plus a groupby, not new code.
 
 Deferred: multi-interval `δ(T)` (Theorem 4 — `dam_instance(interval)` was built
 for it); `build_dam_instance` (the inverse of `clear_dam`) — only needed where a
