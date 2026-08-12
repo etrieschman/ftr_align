@@ -21,8 +21,10 @@ from collections.abc import Iterable
 import numpy as np
 import polars as pl
 
-from .network import NetworkModel, contingency_label, element_label
-from .solve import SupportSolution
+from .attribution import differences, failure_modes, floor, row_shares
+from .duality import attribution_blocks
+from .network import NetworkModel, align, contingency_label, element_label, meet
+from .solve import SupportProblem, SupportSolution
 
 EPS = 1e-9
 NET_DUAL_TOL = 0.5  # drop sub-dollar net duals from the reported table
@@ -102,6 +104,104 @@ def dual_summary(
     if labels:
         out = out.with_columns(**{k: pl.lit(v) for k, v in labels.items()})
     return out
+
+
+def run_row(
+    f: NetworkModel,
+    g: NetworkModel,
+    direction: np.ndarray,
+    labels: dict | None = None,
+    solver=None,
+) -> dict:
+    """One flat record summarising a single ``(model pair, direction)`` cell.
+
+    Deliberately thin: a dict, so a sweep is ``pl.DataFrame([run_row(...) for
+    ...])`` and adding a column is adding a key.  Every table T1-T5 and N1-N6
+    wants is a groupby over a frame of these plus :func:`row_table`, so the
+    intent is that this grows as the analysis asks for more, not that it is
+    complete now."""
+    modes = failure_modes(f, g, direction, solver=solver)
+    models = dict(zip(("U", "V"), align(f, g)))
+    out = {**(labels or {}), **modes}
+    # A failure mode is a difference of support values of order 1e4, so "zero"
+    # means "below the noise of that subtraction", not below EPS.  Without this
+    # a mode that is exactly zero reports a meaningless floor ratio.
+    zero = 1e-6 * max(1.0, abs(modes["h_f"]), abs(modes["h_g"]))
+
+    for mode, model in models.items():
+        problem = SupportProblem(model, direction)
+        mu = problem.solve(solver=solver).mu
+        blocks = attribution_blocks(problem)
+        sizes = [len(rows) for rows in blocks]
+        value = floor(f, g, mu, mode=mode)
+        out |= {
+            f"floor_{mode}": value,
+            # The share of the failure mode the floor explains -- the number that
+            # decides whether the floor is an instrument or a footnote (T1).
+            # Reported per mode because only *level* differences carry a floor at
+            # all, so a case can have a meaningful ratio in one mode and a
+            # structural zero in the other.
+            f"floor_ratio_{mode}": (
+                None if abs(modes[mode]) < zero else value / modes[mode]
+            ),
+            f"n_blocks_{mode}": len(blocks),
+            f"max_block_{mode}": max(sizes, default=0),
+            f"dim_trade_space_{mode}": sum(sizes) - len(blocks),
+        }
+    return out
+
+
+def row_table(
+    f: NetworkModel,
+    g: NetworkModel,
+    direction: np.ndarray,
+    labels: dict | None = None,
+    mode: str = "U",
+    solver=None,
+) -> pl.DataFrame:
+    """Per-constraint detail for one cell: limits, the certificate, the row's
+    attributed share, and which block it landed in.
+
+    Restricted to rows that either disagree or carry a share -- the full stacked
+    index is mostly zeros and unenlightening."""
+    f_u, g_u = align(f, g)
+    m = meet(f, g)
+    model = f_u if mode == "U" else g_u
+    problem = SupportProblem(model, direction)
+    mu = problem.solve(solver=solver).mu
+    q_meet = SupportProblem(m, direction).solve(solver=solver, want_primal=True).q
+    share = row_shares(f, g, mu, q_meet, mode=mode)
+
+    block_of = {}
+    for r, rows in enumerate(attribution_blocks(problem)):
+        for i in rows:
+            block_of[int(i)] = r
+
+    kind = {}
+    for key, idx in differences(f, g).items():
+        for i in idx:
+            kind[int(i)] = key
+
+    keep = sorted(set(kind) | set(np.where(np.abs(share) > EPS)[0].tolist()))
+    base = model.labels()
+    records = [
+        {
+            **(labels or {}),
+            "constraint": i,
+            "contingency": base["contingency"][i],
+            "element": base["element"][i],
+            "side": base["side"][i],
+            "f_i": float(f_u.b[i]),
+            "g_i": float(g_u.b[i]),
+            "meet_i": float(m.b[i]),
+            "difference": kind.get(i),
+            "mu": float(mu[i]),
+            "share": float(share[i]),
+            "block": block_of.get(i),
+        }
+        for i in map(int, keep)
+    ]
+    return pl.DataFrame(records)
 
 
 def block_table(

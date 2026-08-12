@@ -15,9 +15,9 @@ from .network import (
     PhysicalNetwork,
     align,
     compute_ptdf,
-    embed,
     is_connected,
     meet,
+    with_limits,
 )
 from .solve import (
     DamInstance,
@@ -28,8 +28,8 @@ from .solve import (
     clear_dam,
     solve_support_cvxpy,
 )
-from .attribution import discrepancy, failure_modes
-from .metrics import alignment_summary, dual_summary, net_dual
+from .attribution import differences, failure_modes
+from .metrics import alignment_summary, dual_summary, net_dual, row_table, run_row
 
 __all__ = [
     "Contingency",
@@ -37,9 +37,9 @@ __all__ = [
     "PhysicalNetwork",
     "align",
     "compute_ptdf",
-    "embed",
     "is_connected",
     "meet",
+    "with_limits",
     "DamInstance",
     "DamResult",
     "SupportData",
@@ -47,9 +47,11 @@ __all__ = [
     "SupportSolution",
     "clear_dam",
     "solve_support_cvxpy",
-    "discrepancy",
+    "differences",
     "failure_modes",
     "alignment_summary",
     "dual_summary",
     "net_dual",
+    "row_table",
+    "run_row",
 ]

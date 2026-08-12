@@ -13,8 +13,7 @@ from ftr_align.attribution import (
     block_share_range,
     block_shares,
     ceiling,
-    discrepancy,
-    exact_split,
+    differences,
     failure_modes,
     floor,
     primal_invariant,
@@ -53,8 +52,8 @@ def _setup(case, scenario, mode="U"):
     f_u, g_u = align(f, g)
     model = f_u if mode == "U" else g_u
     mu = SupportProblem(model, d).solve(solver=CLEAR).mu
-    q_wedge = SupportProblem(meet(f, g), d).solve(solver=CLEAR, want_primal=True).q
-    return f, g, d, mu, q_wedge
+    q_meet = SupportProblem(meet(f, g), d).solve(solver=CLEAR, want_primal=True).q
+    return f, g, d, mu, q_meet
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -78,9 +77,9 @@ def test_exact_split_reconstructs_the_failure_mode(case, scenario, mode):
 
     The sharpest consistency check available: it ties the certificate, the
     intersection optimum and three separate support values into one identity."""
-    f, g, d, mu, q_wedge = _setup(case, scenario, mode)
+    f, g, d, mu, q_meet = _setup(case, scenario, mode)
     m = failure_modes(f, g, d, solver=CLEAR)
-    total = exact_split(f, g, mu, q_wedge, mode=mode)
+    total = row_shares(f, g, mu, q_meet, mode=mode).sum()
     assert total == pytest.approx(m[mode], abs=1e3 * _tol(m))
 
 
@@ -141,7 +140,7 @@ def test_coverage_differences_carry_no_floor(case, scenario):
     value landing on other rows."""
     f, g, d, mu, _ = _setup(case, scenario, "U")
     tol = _tol(failure_modes(f, g, d, solver=CLEAR))
-    diff = discrepancy(f, g)
+    diff = differences(f, g)
     for key in ("coverage_U", "coverage_V"):
         if len(diff[key]):
             assert floor(f, g, mu, diff[key], mode="U") == pytest.approx(0.0, abs=tol)
@@ -156,12 +155,12 @@ def test_ceiling_bounds_the_failure_mode_from_above(case, scenario, mode):
     q = 0 is admissible for every S and returns h(f;y) -- the weakest possible
     bound.  A q attaining h(f^g;y) closes the bound on the *full* failure mode.
     Both must dominate the true value; only the second is tight."""
-    f, g, d, mu, q_wedge = _setup(case, scenario, mode)
+    f, g, d, mu, q_meet = _setup(case, scenario, mode)
     m = failure_modes(f, g, d, solver=CLEAR)
     h = m["h_f"] if mode == "U" else m["h_g"]
 
-    loose = ceiling(f, g, mu, d, np.zeros_like(q_wedge), mode=mode)
-    tight = ceiling(f, g, mu, d, q_wedge, mode=mode)
+    loose = ceiling(f, g, mu, d, np.zeros_like(q_meet), mode=mode)
+    tight = ceiling(f, g, mu, d, q_meet, mode=mode)
 
     tol = _tol(m)
     assert loose == pytest.approx(h, abs=1e3 * tol)  # uninformative, as advertised
@@ -192,13 +191,13 @@ def test_block_shares_are_invariant_across_the_dual_face(case, scenario):
     d = clear_dam(g, toy.SCENARIOS[scenario], solver=CLEAR).direction
     f_u, _ = align(f, g)
     problem = SupportProblem(f_u, d)
-    q_wedge = SupportProblem(meet(f, g), d).solve(solver=CLEAR, want_primal=True).q
+    q_meet = SupportProblem(meet(f, g), d).solve(solver=CLEAR, want_primal=True).q
     blocks = attribution_blocks(problem)
 
     mus = [problem.solve(solver={"solver": s}).mu for s in ("CLARABEL", "HIGHS")]
     shares = [
         np.array(
-            [row_shares(f, g, mu, q_wedge, mode="U")[rows].sum() for rows in blocks]
+            [row_shares(f, g, mu, q_meet, mode="U")[rows].sum() for rows in blocks]
         )
         for mu in mus
     ]
@@ -235,9 +234,9 @@ def test_only_priced_rows_carry_a_share(case, scenario):
     certificate leaves ~1e-7 multipliers on unpriced rows, which against a limit
     of a few hundred MW is dollars of numerical dust.  What must hold is that the
     dust is negligible against the failure mode, not that it is bit-zero."""
-    f, g, d, mu, q_wedge = _setup(case, scenario, "U")
+    f, g, d, mu, q_meet = _setup(case, scenario, "U")
     f_u, _ = align(f, g)
-    share = row_shares(f, g, mu, q_wedge, mode="U")
+    share = row_shares(f, g, mu, q_meet, mode="U")
     priced = J_star(SupportProblem(f_u, d))
     off = np.setdiff1d(np.arange(len(share)), priced)
     m = failure_modes(f, g, d, solver=CLEAR)

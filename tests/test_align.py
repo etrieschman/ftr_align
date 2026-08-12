@@ -1,11 +1,12 @@
 """Independently-defined models with different contingency lists are mapped onto
-a common row index by align()/embed() for row-level comparison.  (Support values
-and the gap don't need this -- they use the node-space direction.)
+a common row index by align() for row-level comparison and for building the
+intersection.  (Support values and the gap don't need this -- they use the
+node-space direction.)
 """
 
 import numpy as np
 
-from ftr_align import Contingency, NetworkModel, align, embed
+from ftr_align import Contingency, NetworkModel, align, with_limits
 from ftr_align.cases import toy
 
 
@@ -39,17 +40,25 @@ def test_align_to_common_index():
     assert np.allclose(dam_u.b[dam_u.rows_upper(None)], toy.BASE_LIMITS)
 
 
-def test_embed_vector_matches_by_identity():
+def test_with_limits_keeps_contingencies_consistent():
+    """A limit change must rebuild the Contingency objects, not just b.
+
+    dataclasses.replace(model, b=...) leaves the contingency list carrying the
+    old limits, and align() reads limits from that list -- so a model built the
+    short way would silently re-align to its pre-change values."""
     net = toy.NETWORK
-    dam = _model(net, [None], toy.BASE_LIMITS)
-    ftr = _model(net, [None, toy.SL], toy.BASE_LIMITS)
+    model = _model(net, [None, toy.SL], toy.BASE_LIMITS)
+    tightened = with_limits(model, 0.5 * model.b)
 
-    # a per-row vector on the DAM rows, embedded onto the (larger) FTR rows
-    mu_dam = np.zeros(dam.n_rows)
-    mu_dam[dam.rows_upper(None)[toy.SL]] = 7.0
-    mu_ftr = embed(mu_dam, dam, ftr)
-
-    assert mu_ftr[ftr.rows_upper(None)[toy.SL]] == 7.0
-    # FTR-only contingency rows have no source -> filled with 0
-    assert mu_ftr[ftr.rows_upper(toy.SL)].sum() == 0.0
-    assert mu_ftr.shape[0] == ftr.n_rows
+    assert np.allclose(tightened.b, 0.5 * model.b)
+    rebuilt = np.concatenate(
+        [
+            np.concatenate([c.upper for c in tightened.contingencies]),
+            np.concatenate([c.lower for c in tightened.contingencies]),
+        ]
+    )
+    assert np.allclose(rebuilt, tightened.b)
+    # and the round trip through align() preserves them
+    (realigned,) = align(tightened)
+    assert np.allclose(realigned.b, tightened.b)
+    assert np.shares_memory(tightened.K, model.K)  # K reused, not recomputed

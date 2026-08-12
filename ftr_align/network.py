@@ -258,24 +258,29 @@ class NetworkModel:
 # ----------------------------------------------------------------------------
 # Result-conversion tools: put two models' per-row vectors on a common index
 # ----------------------------------------------------------------------------
-def embed(
-    values: np.ndarray, source: NetworkModel, target: NetworkModel, fill: float = 0.0
-) -> np.ndarray:
-    """Re-express a per-row vector (a certificate ``y`` or a dual ``mu``) from
-    ``source`` rows onto ``target`` rows, matching by ``(contingency, element,
-    side)``.  Target rows absent from source get ``fill`` (0 for ``y``/``mu``).
+def with_limits(model: NetworkModel, b: np.ndarray) -> NetworkModel:
+    """``model`` with a new limit vector, rebuilding its :class:`Contingency`
+    objects so they stay consistent with ``b``.
 
-    Needed only for *row-level* cross-model comparison (e.g. lining up
-    ``mu_f`` and ``mu_g``); support values and the gap use the node-space
-    direction and need no alignment.  Valid only under common PTDFs.
+    ``dataclasses.replace(model, b=...)`` would be shorter and is wrong: it leaves
+    ``model.contingencies`` carrying the *old* limits, so anything reading limits
+    from the contingency list rather than from ``b`` -- :func:`align`, most
+    obviously -- would silently use stale values.  ``K`` is unaffected by a limit
+    change, so it is reused rather than recomputed.
     """
-    out = np.full(target.n_rows, fill)
-    source_keys = set(source.keys)
-    for key in target.keys:
-        if key in source_keys:
-            out[target.rows_upper(key)] = values[source.rows_upper(key)]
-            out[target.rows_lower(key)] = values[source.rows_lower(key)]
-    return out
+    b = np.asarray(b, dtype=float)
+    half, ell = model.n_rows // 2, model.ell
+    conts = tuple(
+        Contingency(
+            c.key,
+            upper=b[i * ell : (i + 1) * ell],
+            lower=b[half + i * ell : half + (i + 1) * ell],
+        )
+        for i, c in enumerate(model.contingencies)
+    )
+    return NetworkModel(
+        network=model.network, contingencies=conts, K=model.K, b=b
+    )
 
 
 def align(*models: NetworkModel) -> list[NetworkModel]:
@@ -327,18 +332,4 @@ def meet(f: NetworkModel, g: NetworkModel) -> NetworkModel:
             "elementwise minimum to take.  The intersection is still well defined "
             "as the stacked system [K_f; K_g] q <= [f; g] -- implement that here."
         )
-    conts = tuple(
-        Contingency(
-            cf.key,
-            upper=np.minimum(cf.upper, cg.upper),
-            lower=np.minimum(cf.lower, cg.lower),
-        )
-        for cf, cg in zip(f_u.contingencies, g_u.contingencies)
-    )
-    # K is shared, so reuse it rather than re-inverting the PTDFs per contingency.
-    return NetworkModel(
-        network=f_u.network,
-        contingencies=conts,
-        K=f_u.K,
-        b=np.minimum(f_u.b, g_u.b),
-    )
+    return with_limits(f_u, np.minimum(f_u.b, g_u.b))

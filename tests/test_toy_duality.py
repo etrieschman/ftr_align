@@ -5,7 +5,7 @@ exercise the robust-bound and discrepancy machinery on the toy.
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, clear_dam, discrepancy, net_dual
+from ftr_align import SupportProblem, clear_dam, differences, net_dual
 from ftr_align.duality import robust_bounds
 from ftr_align.cases import toy
 
@@ -67,27 +67,27 @@ def test_toy_duals_are_unique():
         assert np.allclose(lo, hi, atol=1e-4)
 
 
-def test_discrepancy_kinds_and_modes():
+def test_differences_kinds_and_modes():
     """prop:kinds -- each disagreeing row is a level or coverage difference, and
     feeds exactly one failure mode (the looser model's)."""
     # extra_ftr: f enforces a contingency g does not -> coverage difference, and
     # f is the tighter model there, so it feeds V.
-    d = discrepancy(*toy.MODELS["extra_ftr"])
+    d = differences(*toy.MODELS["extra_ftr"])
     assert len(d["coverage_V"]) > 0
     assert all(len(d[k]) == 0 for k in ("coverage_U", "level_U", "level_V"))
 
     # dam_outage: g enforces a contingency f does not -> f looser -> feeds U.
-    d = discrepancy(*toy.MODELS["dam_outage"])
+    d = differences(*toy.MODELS["dam_outage"])
     assert len(d["coverage_U"]) > 0
     assert all(len(d[k]) == 0 for k in ("coverage_V", "level_U", "level_V"))
 
     # derate: both enforce the base case, f at 0.75 of g -> level difference
     # feeding V, with no coverage difference anywhere.
-    d = discrepancy(*toy.MODELS["derate"])
+    d = differences(*toy.MODELS["derate"])
     assert len(d["level_V"]) > 0
     assert all(len(d[k]) == 0 for k in ("level_U", "coverage_U", "coverage_V"))
 
     # mixed: a level difference feeding V stacked on a coverage difference
     # feeding U -- both failure modes positive at once (the T2 headline).
-    d = discrepancy(*toy.MODELS["mixed"])
+    d = differences(*toy.MODELS["mixed"])
     assert len(d["level_V"]) > 0 and len(d["coverage_U"]) > 0

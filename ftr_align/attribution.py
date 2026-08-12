@@ -26,12 +26,10 @@ at -- hence the two invariance conditions.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 
 from .duality import J_star, attribution_blocks, in_span, primal_face_range
-from .network import NetworkModel, align, meet
+from .network import NetworkModel, align, meet, with_limits
 from .solve import SupportProblem
 
 
@@ -72,9 +70,8 @@ def repaired(model: NetworkModel, target: NetworkModel, rows) -> NetworkModel:
     """``model`` with its limits on ``rows`` replaced by ``target``'s
     (``def:repair``).  Both must already be on a common row index."""
     b = model.b.copy()
-    rows = np.asarray(rows, dtype=int)
-    b[rows] = target.b[rows]
-    return replace(model, b=b)
+    b[np.asarray(rows, dtype=int)] = target.b[np.asarray(rows, dtype=int)]
+    return with_limits(model, b)
 
 
 def repair_value(
@@ -165,42 +162,29 @@ def ceiling(
     return float(model.b[active] @ mu[active] - direction @ q)
 
 
-def exact_split(
-    f: NetworkModel,
-    g: NetworkModel,
-    mu: np.ndarray,
-    q_wedge: np.ndarray,
-    rows=None,
-    mode: str = "U",
-) -> float:
-    """``cor:exact_split`` -- the failure mode written out row by row,
-    ``sum_i mu_i [b_i - (K q^)_i]``, where ``q^`` attains ``h(f^g;y)``.
-
-    This is the ceiling closed: at ``S`` the full index set the admissible
-    injections are exactly ``Q(f^g)``, so an optimal ``q^`` makes the bound
-    tight.  Summing over all rows reproduces ``U`` (or ``V``) exactly, which is
-    the sharpest available check that the certificate, the intersection optimum
-    and the support values are mutually consistent."""
-    share = row_shares(f, g, mu, q_wedge, mode=mode)
-    if rows is None:
-        return float(share.sum())
-    return float(share[np.asarray(rows, dtype=int)].sum())
-
-
 def row_shares(
     f: NetworkModel,
     g: NetworkModel,
     mu: np.ndarray,
-    q_wedge: np.ndarray,
+    q_meet: np.ndarray,
     mode: str = "U",
 ) -> np.ndarray:
-    """The per-row terms of :func:`exact_split`, ``mu_i [b_i - (K q^)_i]``, as a
-    full-length co-indexed vector (zero off the enforced rows)."""
+    """``cor:exact_split`` -- the failure mode written out row by row,
+    ``mu_i [b_i - (K q^)_i]`` with ``q^`` attaining ``h(f^g;y)``, returned as a
+    full-length co-indexed vector (zero off the enforced rows).
+
+    This is the ceiling closed: at the full index set the admissible injections
+    are exactly ``Q(f^g)``, so an optimal ``q^`` makes the bound tight.  Hence
+    ``.sum()`` reproduces ``U`` (or ``V``) exactly -- the sharpest available check
+    that the certificate, the intersection optimum and the support values are
+    mutually consistent -- and ``[rows].sum()`` gives any subset's share, which is
+    all a block split is.  There is no separate ``exact_split``: summing a
+    co-indexed vector is the package's normal idiom, not a function."""
     f_u, g_u = align(f, g)
     model = f_u if mode == "U" else g_u
     active = np.isfinite(model.b)
     b = np.where(active, model.b, 0.0)  # avoid 0 * inf on unenforced rows
-    return np.where(active, mu * (b - model.K @ q_wedge), 0.0)
+    return np.where(active, mu * (b - model.K @ q_meet), 0.0)
 
 
 # ----------------------------------------------------------------------------
@@ -228,10 +212,10 @@ def block_shares(
 
     problem = SupportProblem(model, direction)
     mu = problem.solve(solver=solver).mu
-    q_wedge = SupportProblem(m, direction).solve(solver=solver, want_primal=True).q
+    q_meet = SupportProblem(m, direction).solve(solver=solver, want_primal=True).q
 
     blocks = attribution_blocks(problem)
-    share = row_shares(f, g, mu, q_wedge, mode=mode)
+    share = row_shares(f, g, mu, q_meet, mode=mode)
     return blocks, np.array([float(share[rows].sum()) for rows in blocks])
 
 
@@ -297,21 +281,30 @@ def block_share_range(
 # ----------------------------------------------------------------------------
 # Where the models disagree
 # ----------------------------------------------------------------------------
-def discrepancy(f: NetworkModel, g: NetworkModel) -> dict[str, np.ndarray]:
-    """Rows where the FTR model ``f`` and the DAM model ``g`` disagree, split by
-    kind and by the failure mode each feeds (``prop:kinds``).  Aligned internally.
+def differences(f: NetworkModel, g: NetworkModel) -> dict[str, np.ndarray]:
+    """Sort the rows on which ``f`` and ``g`` disagree into the four kinds of
+    ``prop:kinds``, returning row indices per kind.  Aligned internally.
 
-    A row disagrees in exactly one of two ways.  A *level* difference has both
-    limits finite with ``f_i = alpha_i g_i``, ``alpha_i != 1``; a *coverage*
-    difference has one model at ``+inf`` (unmonitored, hence looser than any
-    finite limit).  Either way the looser model is the one that loses value on
-    adopting the intersection, so ``f_i > g_i`` feeds ``U`` and ``f_i < g_i``
-    feeds ``V``.
+    Concretely: align the two models onto one row index, compare ``f_i`` against
+    ``g_i`` row by row, and label each disagreement along two axes.
 
-    The kind decides whether a row can carry a floor at all; the mode is only
-    which model is looser.  Note that a row feeding ``U`` does *not* imply
-    ``U > 0``: disagreement composes over rows, value does not
-    (``prop:composition`` item 3).
+    *Kind* -- is the disagreement about a **level** (both models enforce the row,
+    at different finite limits) or about **coverage** (one model enforces it, the
+    other leaves it at ``+inf``)?  This is the axis that matters, because only a
+    level difference can carry a floor: an infinite limit forces ``mu_i = 0``, so
+    a coverage difference's entire contribution is displaced value showing up on
+    *other* rows (``cor:diagnosable``).
+
+    *Mode* -- which failure mode does it feed?  Whichever model is looser at that
+    row is the one that loses value on adopting the intersection, so ``f_i > g_i``
+    feeds ``U`` and ``f_i < g_i`` feeds ``V``.  This axis is bookkeeping.
+
+    What it is for: naming what kind of difference a case actually contains
+    (T1 checks each canonical case is the kind it claims to be), and picking out
+    the rows a floor can be read on.  What it does **not** tell you is whether a
+    mode is nonzero -- a row feeding ``U`` does not imply ``U > 0``.  Disagreement
+    composes over rows; value does not (``prop:composition`` item 3), and
+    ``MODELS["mixed"]`` is the standing counterexample.
     """
     f_u, g_u = align(f, g)
     bf, bg = f_u.b, g_u.b

@@ -51,14 +51,15 @@ functions solve. Model pairs are always ordered `(f, g)`, matching `Δ(f,g;y)`;
   node-space vector and both support problems are still well-posed. Passing `y`
   instead would *not* survive — it is meaningless without the model that indexes
   it. **Do not "carry `y` for later"; `d` is the interface that lasts.**
-- **`align`/`embed` put two models on a common row index.** `embed(values,
-  source, target)` matches rows by `(contingency, element, side)`; `align(*models)`
-  rebuilds onto a union contingency set (unenforced contingencies added with
-  `+inf` limits). Used for row-level cross-model comparison (lining up `μ_f`/`μ_g`,
-  `discrepancy`, joint blocks) and — legitimately — as model-level preprocessing
-  for the intersection `f ∧ g`, which needs a common index by construction. Never
-  needed before a plain support solve. Valid only under **Assumption 1 (common
-  PTDFs)**; ERCOT's different-PTDF case is flagged, separate, not yet handled.
+- **`align` puts two models on a common row index**, rebuilding both onto a union
+  contingency set (unenforced contingencies added with `+inf` limits). Used for
+  row-level cross-model comparison (lining up `μ_f`/`μ_g`, `differences`, joint
+  blocks) and — legitimately — as model-level preprocessing for the intersection
+  `f ∧ g`, which needs a common index by construction. Never needed before a plain
+  support solve. Every comparative quantity aligns first, which is why `embed`
+  was deleted: `μ` comes out on the common index natively. Valid only under
+  **Assumption 1 (common PTDFs)**; ERCOT's different-PTDF case is flagged,
+  separate, not yet handled.
 - **`f ∧ g` is an intersection, not an elementwise min.** `Q(f) ∩ Q(g)` is always
   the polytope of `[K_f; K_g] q ⪯ [f; g]`. Under Assumption 1 that stack has
   identical row pairs and collapses *exactly* to `min(f_i, g_i)` after `align` —
@@ -122,8 +123,8 @@ ftr_align/
                 `tap`), is_connected (bridge/islanding guard), PhysicalNetwork
                 (owns `A`, optional `tap`), Contingency (key + limits; pass one
                 `upper` for symmetric), NetworkModel (owns K & b; `.H` is the
-                stacked PTDF, the upper half of K), align, embed, meet (f ^ g),
-                contingency_label/element_label
+                stacked PTDF, the upper half of K), align, meet (f ^ g),
+                with_limits, contingency_label/element_label
   solve.py      assembly fns (Lambda / Lambda_star / network_constraints),
                 SupportData, SupportProblem, solve_support_cvxpy,
                 SupportSolution, DamInstance, DamResult, clear_dam (returns y*
@@ -140,12 +141,16 @@ ftr_align/
                 QR fundamental circuits), attribution_blocks (row indices per
                 block), block_totals (W_{J_r})
   attribution.py  failure_modes (U/V/Delta), repaired + repair_value (U^(S),
-                repairing toward f ^ g), floor, ceiling, exact_split +
-                row_shares, block_shares (prop:block_underfunding),
-                primal_invariant + block_share_range, discrepancy
-                (level/coverage x U/V per prop:kinds)
-  metrics.py    net_dual, row_labels, alignment_summary (Table II),
-                dual_summary (Table III), block_table
+                repairing toward f ^ g), floor, ceiling, row_shares
+                (cor:exact_split as a co-indexed vector -- `.sum()` is the
+                failure mode, `[rows].sum()` is a block share), block_shares
+                (prop:block_underfunding), primal_invariant +
+                block_share_range, differences (level/coverage x U/V per
+                prop:kinds)
+  metrics.py    net_dual, row_labels, run_row (one flat record per (model pair,
+                direction) cell), row_table (per-constraint detail),
+                block_table, alignment_summary (Table II), dual_summary
+                (Table III)
   cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,
                 bid matrices) + the paper's cases as constants: SCENARIOS (label
                 -> DamInstance, via dam_instance(q_dem, max_gen)), MODELS (label
@@ -248,6 +253,25 @@ genuinely **attained**: `cor:canonical` item 1 makes the floor exactly tight for
 a uniform derate, and the ceiling closes at `q^∧` by construction, so the
 comparisons are routinely between two computations of the same number.
 
+### Results tables (step 4) — deliberately thin
+
+`run_row` returns a **dict**, not a frame, so a sweep is
+`pl.DataFrame([run_row(...) for ...])` and adding a column is adding a key.
+`row_table` gives per-constraint detail, restricted to rows that either disagree
+or carry a share. Both are meant to grow as the analysis asks; don't try to make
+them complete up front.
+
+Floors are reported **per mode** (`floor_U`/`floor_V` and their ratios) because
+only *level* differences carry a floor at all, so a case routinely has a
+meaningful ratio in one mode and a structural zero in the other. And "zero"
+for a failure mode means below `1e-6 * max(|h_f|, |h_g|)`, not below `EPS` —
+same lesson as the test tolerances.
+
+Already visible in the toy sweep, before T1 is written: `floor_ratio_V = 1.0`
+for every uniform derate (`cor:canonical` item 1 — the floor is exactly tight)
+and `0.0` for `extra_ftr` (a pure coverage difference — `cor:diagnosable` says
+zero floor, all displaced value).
+
 ### Removed in step 3, with reasons
 
 - `classify` / `Classification` — binding/degenerate/slack is a one-line read of
@@ -260,6 +284,19 @@ comparisons are routinely between two computations of the same number.
   toward `f ∧ g`, so monotone) and `block_shares` (which takes `U` from the
   blocks of `f` and `V` from those of `g`, per `prop:block_underfunding` —
   `_repair_blocks` had these the other way round).
+- `embed` — zero library callers once every comparative quantity aligns its
+  models first, which puts `μ` on the common index natively. `align` is the
+  whole story.
+- `exact_split` — it was `row_shares(...).sum()`. Summing a co-indexed vector is
+  the package's normal idiom, not a function.
+- `dataclasses.replace(model, b=...)` — replaced by `with_limits`, which rebuilds
+  the `Contingency` objects too. `replace` leaves them carrying the *old* limits,
+  and `align` reads limits from that list, so a repaired model could silently
+  re-align to its pre-repair values.
+
+**Vocabulary:** the memos write `f ∧ g` and say "wedge"; the code says **`meet`**
+throughout (`meet()`, `q_meet`, `h_meet`). Don't reintroduce `wedge` as an
+identifier.
 
 ### Per-contingency / asymmetric / emergency-rating limits
 Supported: `b` is a free per-row vector and `clear_dam` reads the upper and lower
@@ -283,11 +320,9 @@ limit per contingency independently. (`from_limits` was considered and dropped �
 
 ### Next — the misalignment-attribution test backlog (T0–T5, toy first)
 
-Steps 1 (notation), 2 (primitives) and 3 (`attribution.py`) are **done**.
-Remaining, in order:
+Steps 1 (notation), 2 (primitives), 3 (`attribution.py`) and 4 (results tables)
+are **done**. Remaining, in order:
 
-4. **Results tables** (tidy polars, run-level + row-level); port
-   `alignment_summary`/`dual_summary` onto them as views.
 5. **T1, T2 on the 3-node.** `cor:canonical` items 1/4/5 are exact closed forms —
    pass/fail, no tolerance judgment. **Stop and read the floor-to-total ratio**:
    it decides whether the floor is an instrument or a footnote, and how much
