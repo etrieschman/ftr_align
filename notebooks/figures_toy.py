@@ -13,8 +13,15 @@ is met and the y-axis is how it is split.  That is a basis ``T`` with
 constraint lines need no correction for it, since substituting ``q = T u`` turns
 row ``i`` into ``(T^T k_i)^T u <= b_i``, i.e. just ``K T``.
 
-**Colour is the element, style is the model.**  A line keeps its colour across
-contingencies, models and figures; solid is the DAM model and dotted the FTR one.
+**Colour is the element, dash is the contingency, width is the model.**  A line
+keeps its colour across contingencies, models and figures.  Style is *not* spent
+on the model: where both models enforce the same contingency at the same limit
+the two rows are the identical line, so a per-model style would be drawing one
+line twice.  Width carries the model instead, which still separates the two base
+lines in ``derate``/``mixed``, where the FTR limits are derated and the rows are
+parallel rather than coincident.  The supporting hyperplanes in
+:func:`draw_optimum` do stay solid/dotted -- one line per model, no contingency
+to encode.
 
 Every figure names both the case and the scenario, in its title and its
 filename, so nothing is fixed silently.
@@ -25,6 +32,7 @@ Note the layers read the *current* axis limits, so set ``xlim``/``ylim`` first.
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 from ftr_align import clear_dam, meet
 from ftr_align.cases import toy
@@ -47,9 +55,10 @@ OUT.mkdir(exist_ok=True)
 # of that generation from coal to solar" -> q_S up, q_C down.  Both balanced.
 T = basis_from_columns([(0.0, 1.0, -1.0), (1.0, -1.0, 0.0)])
 XLABEL, YLABEL = r"$L$  (load served, MW)", r"$q_S$  (solar dispatch, MW)"
-XLIM, YLIM = (-40, 260), (-60, 200)
+XLIM, YLIM = (-100, 200), (-100, 200)
 
 DAM_LS, FTR_LS, MEET_LS = "solid", "dotted", "dashed"
+DAM_LW, FTR_LW = 1.8, 0.9  # model = width, so dash is free to mean contingency
 
 
 def new_axis(model, title):
@@ -75,6 +84,45 @@ def slug(scenario):
     return scenario.strip("()")
 
 
+def width_key():
+    """Proxy handles naming the width convention.
+
+    Colour and dash each get a swatch for free, because every constraint entry
+    carries them.  Width does not: the per-constraint entries are deduplicated to
+    one handle apiece, so without these two nothing in the legend says which of a
+    thick/thin pair is the FTR limit."""
+    return [
+        Line2D([], [], color="0.35", lw=DAM_LW, label="DAM limit  (thick)"),
+        Line2D([], [], color="0.35", lw=FTR_LW, label="FTR limit  (thin)"),
+    ]
+
+
+def legend(ax, extra=(), **kw):
+    """Legend with duplicate labels collapsed, first occurrence winning, on an
+    opaque background.
+
+    Both models are drawn, and where they enforce the same contingency at the
+    same limit the rows coincide -- so the same ``base:SL`` label is registered
+    twice for what is one visible line.  The background matters because these
+    figures fill the window with lines that would otherwise run through the
+    swatches and misrepresent them."""
+    kw = {
+        "fontsize": 8,
+        "loc": "upper left",
+        "frameon": True,
+        "facecolor": "white",
+        "framealpha": 0.9,
+        "edgecolor": "none",
+        **kw,
+    }
+    seen = {}
+    for handle, text in zip(*ax.get_legend_handles_labels()):
+        seen.setdefault(text, handle)
+    for handle in extra:
+        seen.setdefault(handle.get_label(), handle)
+    ax.legend(seen.values(), seen.keys(), **kw)
+
+
 # %%
 # -------------------------------------
 # One figure per (case, scenario)
@@ -89,43 +137,48 @@ for case, (f_model, g_model) in toy.MODELS.items():
         # Filled but not stroked: the coloured constraint lines below already
         # trace each region's boundary, and a second outline would hide which
         # element bounds where.
-        draw_region(ax, g_model, T, label=r"$\mathcal{Q}(g)$  DAM",
-                    color="grey", ls=DAM_LS, fill_alpha=0.22, outline=False)
-        draw_region(ax, f_model, T, label=r"$\mathcal{Q}(f)$  FTR",
-                    color="C4", ls=FTR_LS, fill_alpha=0.22, outline=False)
+        draw_region(
+            ax,
+            g_model,
+            T,
+            label=r"$\mathcal{Q}(g)$  DAM",
+            color="grey",
+            ls=DAM_LS,
+            fill_alpha=0.22,
+            outline=False,
+        )
+        draw_region(
+            ax,
+            f_model,
+            T,
+            label=r"$\mathcal{Q}(f)$  FTR",
+            color="C4",
+            ls=FTR_LS,
+            fill_alpha=0.22,
+            outline=False,
+        )
 
-        draw_constraints(ax, g_model, T, ls=DAM_LS, lw=1.0, names=False)
-        draw_constraints(ax, f_model, T, ls=FTR_LS, lw=1.0, names=False)
+        # No `ls`: dash carries the contingency, so base and an outage row of the
+        # same element are distinguishable.  The FTR pass is drawn second and
+        # thinner, so a coincident pair reads as one line with a core.
+        draw_constraints(ax, g_model, T, lw=DAM_LW, names=True)
+        draw_constraints(ax, f_model, T, lw=FTR_LW, names=True)
 
         # The intersection is not the boundary of either model, so it keeps an
         # outline of its own.  Unlabelled: it is always the tighter of the two
         # regions already drawn, so the legend would add a third entry for
         # something the picture states.
-        draw_region(ax, meet(f_model, g_model), T,
-                    color="k", ls=MEET_LS, fill_alpha=0.0, lw=1.6)
+        # draw_region(
+        #     ax, meet(f_model, g_model), T, color="k", ls=MEET_LS, fill_alpha=0.0, lw=1.6
+        # )
 
         draw_optimum(ax, g_model, direction, T, solver=CLEAR, color="grey", ls=DAM_LS)
         draw_optimum(ax, f_model, direction, T, solver=CLEAR, color="C4", ls=FTR_LS)
 
-        ax.legend(fontsize=8, loc="upper left", frameon=False)
+        legend(ax, extra=width_key())
         save(fig, f"toy_{case}_{slug(scenario)}")
-
-
-# %%
-# -------------------------------------
-# One figure per model: which constraint bounds where
-# -------------------------------------
-# draw_region shows only the envelope.  Here every half-space is drawn and named,
-# colour by element and style by contingency, including the ones that never bind
-# -- CL at 300 MW only clips the corner of the window, which is itself the point.
-for case in ("dam_outage",):
-    f_model, g_model = toy.MODELS[case]
-    for name, model in (("g (DAM)", g_model), ("f (FTR)", f_model)):
-        fig, ax = new_axis(model, f"{case}   {name}   constraints")
-        draw_region(ax, model, T, color="grey", ls="solid", fill_alpha=0.25)
-        draw_constraints(ax, model, T, lw=1.1)
-        ax.legend(fontsize=8, loc="upper left", frameon=False)
-        save(fig, f"toy_constraints_{case}_{name.split()[0]}")
+        # to view in notebooks
+        display(fig)
 
 
 # %%
@@ -144,8 +197,14 @@ for face in faces(g_model):
     ax.plot(*u, marker="o", ms=7, color="k", zorder=6, ls="none")
     ax.annotate(
         "\n".join(row_labels(g_model, face.rows)),
-        u, textcoords="offset points", xytext=(9, 9), fontsize=7,
+        u,
+        textcoords="offset points",
+        xytext=(9, 9),
+        fontsize=7,
         bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="none", alpha=0.75),
     )
-ax.legend(fontsize=8, loc="upper left", frameon=False)
+legend(ax)  # one model, so no width key
 save(fig, "toy_regimes_dam_outage")
+display(fig)
+
+# %%
