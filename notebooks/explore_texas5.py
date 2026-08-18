@@ -16,12 +16,12 @@ from ftr_align.duality import (
     trade_matrix,
     trade_space,
 )
-from ftr_align.metrics import block_table, support_summary
+from ftr_align.metrics import block_table, row_labels, support_summary
 from ftr_align.cases import texas5
 from ftr_align.cases.texas5 import WN, WS, WD1, WD2, ND, NH, SD, SH, DH
 from ftr_align.cases.texas5 import W, N, S, D, H
 
-CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
+from ftr_align.solve import CENTER  # {"solver": "CLARABEL"}: the interior certificate J* needs
 
 pl.Config.set_tbl_rows(50)
 pl.Config.set_fmt_table_cell_list_len(-1)
@@ -208,50 +208,71 @@ def pattern_direction(pattern):
     return model.K.T @ y
 
 
-summaries = []
+def target_rows(pattern):
+    """The rows the design asked to bind, as global row indices."""
+    return {e if direction == +1 else ell + e for e, direction in pattern}
+
+
+# One solve per pattern, reused for the check, the detail and the blocks.  J*
+# comes off that same certificate rather than a second solve, which is why the
+# solve is CENTER: `mu > 0` identifies J* only from the face's relative interior.
+solved = {}
 for name, pattern in PATTERNS.items():
-    requested = dict(pattern)
-    designed_flow = H_base @ q[name].value
+    problem_p = SupportProblem(model, pattern_direction(pattern))
+    solved[name] = (problem_p, problem_p.solve(solver=CENTER))
 
-    support_problem = SupportProblem(model, pattern_direction(pattern))
-    solution = support_problem.solve(solver=CLEAR)
+# Did the construction work?  One row per pattern rather than four tables to
+# eyeball: `exact` is the whole check -- the designed limits should make the
+# requested rows bind and nothing else.
+display(
+    pl.DataFrame([
+        {
+            "pattern": name,
+            "h": sol.value,
+            "requested": len(target_rows(PATTERNS[name])),
+            "bound": int(sol.binding.sum()),
+            "exact": target_rows(PATTERNS[name])
+            == set(np.flatnonzero(sol.binding).tolist()),
+            "rows": row_labels(model, np.flatnonzero(sol.binding)),
+        }
+        for name, (_, sol) in solved.items()
+    ]).with_columns(pl.col("h").round(2))
+)
 
-    rows = []
 
-    for e, element in enumerate(net.element_names):
-        for direction, row in [("upper", e), ("lower", ell + e)]:
-            signed_flow = designed_flow[e] if direction == "upper" else -designed_flow[e]
-            target_direction = requested.get(e)
+# %%
+# -------------------------------------
+# PER-PATTERN DETAIL
+# -------------------------------------
+# Flow against limit on every row that was asked for or that bound, plus the
+# attribution blocks.  The row indexing comes from model.labels() -- upper rows
+# first, then lower -- so the signed flow is just [f; -f] and nothing here has to
+# rebuild the (contingency, element, side) bookkeeping by hand.
+for name, pattern in PATTERNS.items():
+    problem_p, sol = solved[name]
+    flow = H_base @ q[name].value
+    signed = np.concatenate([flow, -flow])
+    target = np.zeros(model.n_rows, dtype=bool)
+    target[list(target_rows(pattern))] = True
 
-            rows.append({
-                "constraint": f"base : {element} : {direction}",
-                "flow": signed_flow,
-                "limit": b.value[e],
-                "slack": b.value[e] - signed_flow,
-                "target": (
-                    target_direction == +1 and direction == "upper"
-                ) or (
-                    target_direction == -1 and direction == "lower"
-                ),
-                "binding": solution.binding[row].item(),
-            })
+    detail = model.labels().with_columns(
+        flow=pl.Series(signed),
+        limit=pl.Series(model.b),
+        slack=pl.Series(model.b - signed),
+        target=pl.Series(target),
+        binding=pl.Series(sol.binding),
+    )
 
     print(f"\n{name}")
-    print(f"h(b; y) = {solution.value:,.2f}")
-
+    print(f"h(b; y) = {sol.value:,.2f}")
     display(
-        pl.DataFrame(rows)
-        .filter(pl.col("target") | pl.col("binding"))
-        .sort("constraint")
+        detail.filter(pl.col("target") | pl.col("binding"))
+        .drop("contingency")
+        .with_columns(pl.col(pl.Float64).round(2))
     )
 
-    blocks = attribution_blocks(support_problem)
-    display(block_table(model, blocks,
-                        block_totals(support_problem.data.b, solution.mu, blocks)))
-
-    summaries.append(
-        support_summary(support_problem, labels={"pattern": name}, solver=CLEAR)
-    )
+    blocks = attribution_blocks(problem_p, J_star(problem_p, sol))
+    display(block_table(model, blocks, block_totals(model.b, sol.mu, blocks)))
 
 
 # %%
@@ -273,7 +294,10 @@ for name, pattern in PATTERNS.items():
 # together, but no circulation joins them, so 2 singleton blocks and dim 0)
 # against `outer_loop` (a circulation binds four rows into one block).
 display(
-    pl.DataFrame(summaries).with_columns(pl.col(pl.Float64).round(2))
+    pl.DataFrame([
+        support_summary(problem_p, labels={"pattern": name}, solver=CENTER)
+        for name, (problem_p, _) in solved.items()
+    ]).with_columns(pl.col(pl.Float64).round(2))
 )
 
 # %%

@@ -84,9 +84,14 @@ display(runs.select("case", "scenario", "h_g", "h_f", "Delta", "U", "V"))
 # structural zero rather than a small number.
 display(
     runs.select(
-        "case", "scenario",
-        "U", "floor_U", "floor_ratio_U",
-        "V", "floor_V", "floor_ratio_V",
+        "case",
+        "scenario",
+        "U",
+        "floor_U",
+        "floor_ratio_U",
+        "V",
+        "floor_V",
+        "floor_ratio_V",
     )
 )
 
@@ -98,8 +103,12 @@ display(
 # The plain 3-node has no parallel elements, so it is all singletons.
 display(
     runs.select(
-        "case", "scenario",
-        "n_priced_V", "n_blocks_V", "max_block_V", "dim_trade_space_V",
+        "case",
+        "scenario",
+        "n_priced_V",
+        "n_blocks_V",
+        "max_block_V",
+        "dim_trade_space_V",
     )
 )
 
@@ -159,27 +168,47 @@ display(row_table(f_model, g_model, d, mode="V", solver=CENTER))
 import matplotlib.pyplot as plt
 
 from ftr_align import meet
-from ftr_align.polytope import faces, polygon
+from ftr_align.polytope import basis_from_columns, faces, polygon
 from ftr_align.viz import (
-    DAM_STYLE, FTR_STYLE, MEET_STYLE,
-    draw_optimum, draw_region, label_axes,
+    DAM_STYLE,
+    FTR_STYLE,
+    MEET_STYLE,
+    draw_optimum,
+    draw_region,
+    label_axes,
 )
+
+# The axes are the basis T, and nothing else.  Each column of T says what moving
+# one unit along that axis does to the nodal injections (S, C, L), and must be
+# balanced -- basis_from_columns checks that.  Change these two columns and every
+# layer follows; the constraint geometry needs no correction, because q = T u
+# turns row i into (T^T k_i)^T u <= b_i, i.e. just K T.
+#
+#   (0, 1, -1)  serve one more unit of load, from coal -> q_C up, q_L down = L
+#   (1, -1,  0) shift one unit of that from coal to solar -> q_S up, q_C down
+#
+# Drop T (or pass a different one) to get back the plain drop-the-slack axes,
+# which on this network are (q_S, q_C).
+T = basis_from_columns([(0.0, 1.0, -1.0), (1.0, -1.0, 0.0)])
+XLABEL, YLABEL = r"$L$  (load served, MW)", r"$q_S$  (solar dispatch, MW)"
 
 SCEN = "(a)"
 fig, axes = plt.subplots(1, len(toy.MODELS), figsize=(4.4 * len(toy.MODELS), 4.2))
 for ax, (case, (f_model, g_model)) in zip(axes, toy.MODELS.items()):
     d = clear_dam(g_model, toy.SCENARIOS[SCEN], solver=CENTER).direction
-    ax.set_xlim(-170, 170)
-    ax.set_ylim(-210, 210)
-    draw_region(ax, g_model, label=r"$\mathcal{Q}(g)$  DAM", **DAM_STYLE)
-    draw_region(ax, f_model, label=r"$\mathcal{Q}(f)$  FTR", **FTR_STYLE)
-    draw_region(ax, meet(f_model, g_model), label=r"$\mathcal{Q}(f \wedge g)$", **MEET_STYLE)
-    draw_optimum(ax, g_model, d, solver=CENTER, **DAM_STYLE)
-    draw_optimum(ax, f_model, d, solver=CENTER, **FTR_STYLE)
-    label_axes(ax, g_model)
+    ax.set_xlim(-100, 200)
+    ax.set_ylim(-100, 200)
+    draw_region(ax, g_model, T, label=r"$\mathcal{Q}(g)$  DAM", **DAM_STYLE)
+    draw_region(ax, f_model, T, label=r"$\mathcal{Q}(f)$  FTR", **FTR_STYLE)
+    draw_region(
+        ax, meet(f_model, g_model), T, label=r"$\mathcal{Q}(f \wedge g)$", **MEET_STYLE
+    )
+    draw_optimum(ax, g_model, d, T, solver=CENTER, **DAM_STYLE)
+    draw_optimum(ax, f_model, d, T, solver=CENTER, **FTR_STYLE)
+    label_axes(ax, g_model, T, xlabel=XLABEL, ylabel=YLABEL)
     ax.axhline(0, lw=0.4, c="k")
     ax.axvline(0, lw=0.4, c="k")
-    ax.set_title(f"{case}  ({SCEN})")
+    ax.set_title(f"{case}  {SCEN}")
 axes[0].legend(fontsize=8, loc="upper left", frameon=False)
 fig.tight_layout()
 
