@@ -11,19 +11,46 @@ import pytest
 from ftr_align import SupportProblem, align, clear_dam, meet
 from ftr_align.attribution import (
     block_share_range,
-    block_shares,
     ceiling,
     differences,
-    failure_modes,
     floor,
     primal_invariant,
     repair_value,
     row_shares,
 )
 from ftr_align.duality import J_star, attribution_blocks
+from ftr_align.metrics import gap_summary
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}
+
+
+def _block_shares(model, target, direction):
+    """What `attribution.block_shares` used to be, inlined here: row_shares
+    summed over attribution_blocks.  It was deleted from the library for the same
+    reason `exact_split` was -- summing a co-indexed vector over an index set is
+    the package's idiom, not a function -- and `metrics.misalignment_blocks` is
+    the supported way to get these numbers with their ranges attached."""
+    # Align first: row_shares works on the common index, so a mu solved from the
+    # unaligned model is the wrong length.  (It fails loudly -- a shape mismatch
+    # -- but it is the one trap in the pair form.)
+    model_u, target_u = align(model, target)
+    problem = SupportProblem(model_u, direction)
+    sol = problem.solve(solver=CLEAR)
+    q_target = SupportProblem(target_u, direction).solve(
+        solver=CLEAR, want_primal=True
+    ).q
+    share = row_shares(model_u, target_u, sol.mu, q_target)
+    blocks = attribution_blocks(problem, J_star(problem, sol))
+    return np.array([float(share[rows].sum()) for rows in blocks])
+
+
+def _loose(f, g, mode):
+    """The model that *loses* the value in a mode: U is what f loses on
+    adopting f ^ g, V is what g loses.  With the pair form there is no mode
+    argument -- the mode is which model you pass first -- so the tests that
+    still sweep both modes pick the model here."""
+    return f if mode == "U" else g
 CASES = list(toy.MODELS)
 SCENARIOS = list(toy.SCENARIOS)
 
@@ -59,10 +86,10 @@ def _setup(case, scenario, mode="U"):
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("scenario", SCENARIOS)
 @pytest.mark.parametrize("mode", ["U", "V"])
-def test_failure_modes_are_nonnegative_and_decompose_the_gap(case, scenario, mode):
+def test_gap_summary_modes_are_nonnegative_and_decompose_the_gap(case, scenario, mode):
     """def:failure_modes and prop:alignment_gap_decomposition."""
     f, g, d, _, _ = _setup(case, scenario, mode)
-    m = failure_modes(f, g, d, solver=CLEAR)
+    m = gap_summary(f, g, d, solver=CLEAR)
     assert m["U"] >= -_tol(m)
     assert m["V"] >= -_tol(m)
     assert m["Delta"] == pytest.approx(m["U"] - m["V"], rel=1e-9)
@@ -78,8 +105,8 @@ def test_exact_split_reconstructs_the_failure_mode(case, scenario, mode):
     The sharpest consistency check available: it ties the certificate, the
     intersection optimum and three separate support values into one identity."""
     f, g, d, mu, q_meet = _setup(case, scenario, mode)
-    m = failure_modes(f, g, d, solver=CLEAR)
-    total = row_shares(f, g, mu, q_meet, mode=mode).sum()
+    m = gap_summary(f, g, d, solver=CLEAR)
+    total = row_shares(_loose(f, g, mode), meet(f, g), mu, q_meet).sum()
     assert total == pytest.approx(m[mode], abs=1e3 * _tol(m))
 
 
@@ -93,17 +120,17 @@ def test_repair_is_normalised_monotone_and_complete(case, scenario, mode):
     f, g, d, _, _ = _setup(case, scenario, mode)
     n_rows = len(meet(f, g).b)
     every = np.arange(n_rows)
-    modes = failure_modes(f, g, d, solver=CLEAR)
+    modes = gap_summary(f, g, d, solver=CLEAR)
 
     tol = _tol(modes)
-    assert repair_value(f, g, d, [], mode=mode, solver=CLEAR) == pytest.approx(0, abs=tol)
-    assert repair_value(f, g, d, every, mode=mode, solver=CLEAR) == pytest.approx(
+    assert repair_value(_loose(f, g, mode), meet(f, g), d, [], solver=CLEAR) == pytest.approx(0, abs=tol)
+    assert repair_value(_loose(f, g, mode), meet(f, g), d, every, solver=CLEAR) == pytest.approx(
         modes[mode], abs=1e3 * tol
     )
 
     prev = 0.0
     for cut in (n_rows // 4, n_rows // 2, 3 * n_rows // 4, n_rows):
-        value = repair_value(f, g, d, every[:cut], mode=mode, solver=CLEAR)
+        value = repair_value(_loose(f, g, mode), meet(f, g), d, every[:cut], solver=CLEAR)
         assert value >= prev - tol
         assert value >= -tol
         prev = value
@@ -118,18 +145,18 @@ def test_floor_bounds_every_repair_and_is_additive(case, scenario, mode):
     f, g, d, mu, _ = _setup(case, scenario, mode)
     n_rows = len(meet(f, g).b)
     every = np.arange(n_rows)
-    tol = _tol(failure_modes(f, g, d, solver=CLEAR))
+    tol = _tol(gap_summary(f, g, d, solver=CLEAR))
 
     for cut in (0, n_rows // 3, 2 * n_rows // 3, n_rows):
         rows = every[:cut]
-        lower = floor(f, g, mu, rows, mode=mode)
-        actual = repair_value(f, g, d, rows, mode=mode, solver=CLEAR)
+        lower = floor(_loose(f, g, mode), meet(f, g), mu, rows)
+        actual = repair_value(_loose(f, g, mode), meet(f, g), d, rows, solver=CLEAR)
         assert lower <= actual + tol
 
     left, right = every[: n_rows // 2], every[n_rows // 2 :]
-    assert floor(f, g, mu, left, mode=mode) + floor(
-        f, g, mu, right, mode=mode
-    ) == pytest.approx(floor(f, g, mu, every, mode=mode), abs=1e-9)
+    assert floor(_loose(f, g, mode), meet(f, g), mu, left) + floor(
+        _loose(f, g, mode), meet(f, g), mu, right
+    ) == pytest.approx(floor(_loose(f, g, mode), meet(f, g), mu, every), abs=1e-9)
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -139,11 +166,11 @@ def test_coverage_differences_carry_no_floor(case, scenario):
     difference contributes nothing to the floor.  Its whole effect is displaced
     value landing on other rows."""
     f, g, d, mu, _ = _setup(case, scenario, "U")
-    tol = _tol(failure_modes(f, g, d, solver=CLEAR))
+    tol = _tol(gap_summary(f, g, d, solver=CLEAR))
     diff = differences(f, g)
     for key in ("coverage_U", "coverage_V"):
         if len(diff[key]):
-            assert floor(f, g, mu, diff[key], mode="U") == pytest.approx(0.0, abs=tol)
+            assert floor(f, meet(f, g), mu, diff[key]) == pytest.approx(0.0, abs=tol)
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -156,11 +183,11 @@ def test_ceiling_bounds_the_failure_mode_from_above(case, scenario, mode):
     bound.  A q attaining h(f^g;y) closes the bound on the *full* failure mode.
     Both must dominate the true value; only the second is tight."""
     f, g, d, mu, q_meet = _setup(case, scenario, mode)
-    m = failure_modes(f, g, d, solver=CLEAR)
+    m = gap_summary(f, g, d, solver=CLEAR)
     h = m["h_f"] if mode == "U" else m["h_g"]
 
-    loose = ceiling(f, g, mu, d, np.zeros_like(q_meet), mode=mode)
-    tight = ceiling(f, g, mu, d, q_meet, mode=mode)
+    loose = ceiling(_loose(f, g, mode), meet(f, g), mu, d, np.zeros_like(q_meet))
+    tight = ceiling(_loose(f, g, mode), meet(f, g), mu, d, q_meet)
 
     tol = _tol(m)
     assert loose == pytest.approx(h, abs=1e3 * tol)  # uninformative, as advertised
@@ -176,8 +203,8 @@ def test_block_shares_sum_to_the_failure_mode(case, scenario, mode):
     """prop:block_underfunding -- U decomposes over the blocks of the FTR support
     problem and V over those of the DAM one."""
     f, g, d, _, _ = _setup(case, scenario, mode)
-    _, shares = block_shares(f, g, d, mode=mode, solver=CLEAR)
-    m = failure_modes(f, g, d, solver=CLEAR)
+    shares = _block_shares(_loose(f, g, mode), meet(f, g), d)
+    m = gap_summary(f, g, d, solver=CLEAR)
     assert shares.sum() == pytest.approx(m[mode], abs=1e3 * _tol(m))
 
 
@@ -197,7 +224,7 @@ def test_block_shares_are_invariant_across_the_dual_face(case, scenario):
     mus = [problem.solve(solver={"solver": s}).mu for s in ("CLARABEL", "HIGHS")]
     shares = [
         np.array(
-            [row_shares(f, g, mu, q_meet, mode="U")[rows].sum() for rows in blocks]
+            [row_shares(f, meet(f, g), mu, q_meet)[rows].sum() for rows in blocks]
         )
         for mu in mus
     ]
@@ -213,8 +240,8 @@ def test_primal_invariance_condition_matches_the_measured_range(case, scenario):
     f_u, _ = align(f, g)
     blocks = attribution_blocks(SupportProblem(f_u, d))
     for rows in blocks:
-        invariant = primal_invariant(f, g, d, mu, rows, mode="U", solver=CLEAR)
-        lo, hi = block_share_range(f, g, d, mu, rows, mode="U", solver=CLEAR)
+        invariant = primal_invariant(f, meet(f, g), d, mu, rows, solver=CLEAR)
+        lo, hi = block_share_range(f, meet(f, g), d, mu, rows, solver=CLEAR)
         # the leak scale of the face cut, carried through the block coefficient
         w = mu[rows] @ f_u.K[rows]
         leak = 1e-4 * max(1.0, abs(lo)) + 1e-6 * float(np.linalg.norm(w)) * 1e5
@@ -236,8 +263,8 @@ def test_only_priced_rows_carry_a_share(case, scenario):
     dust is negligible against the failure mode, not that it is bit-zero."""
     f, g, d, mu, q_meet = _setup(case, scenario, "U")
     f_u, _ = align(f, g)
-    share = row_shares(f, g, mu, q_meet, mode="U")
+    share = row_shares(f, meet(f, g), mu, q_meet)
     priced = J_star(SupportProblem(f_u, d))
     off = np.setdiff1d(np.arange(len(share)), priced)
-    m = failure_modes(f, g, d, solver=CLEAR)
+    m = gap_summary(f, g, d, solver=CLEAR)
     assert abs(share[off]).sum() <= 1e3 * _tol(m)

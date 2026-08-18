@@ -1,32 +1,16 @@
 # %%
-"""Figures for the 3-node toy, one plot per file, written as PNG to
-``notebooks/figures/``.
+"""Figures for the 3-node toy, written as PNG to ``notebooks/figures/``.
 
-At three nodes power balance leaves a 2-D injection space, so every picture here
-is exact -- not a projection.  Each figure stacks layers from ``ftr_align.viz``
-onto an axis, so a variant is a matter of adding or dropping a call.
+One file per case, scenarios as columns.  At three nodes the injection space is
+2-D, so every picture is exact.
 
-**Axes.**  Not two node injections but *total load served* against *solar
-dispatch*, which is how the conference figures read: the x-axis is how much load
-is met and the y-axis is how it is split.  That is a basis ``T`` with
-``1^T T = 0`` like any other -- see :func:`basis_from_columns` -- and the
-constraint lines need no correction for it, since substituting ``q = T u`` turns
-row ``i`` into ``(T^T k_i)^T u <= b_i``, i.e. just ``K T``.
+Axes are (load served, solar dispatch) -- a basis T with 1^T T = 0, which needs
+no correction since q = T u turns row i into (T^T k_i)^T u <= b_i.
 
-**Colour is the element, dash is the contingency, width is the model.**  A line
-keeps its colour across contingencies, models and figures.  Style is *not* spent
-on the model: where both models enforce the same contingency at the same limit
-the two rows are the identical line, so a per-model style would be drawing one
-line twice.  Width carries the model instead, which still separates the two base
-lines in ``derate``/``mixed``, where the FTR limits are derated and the rows are
-parallel rather than coincident.  The supporting hyperplanes in
-:func:`draw_optimum` do stay solid/dotted -- one line per model, no contingency
-to encode.
+Colour is the element, dash is the contingency, width is the model.  Style is
+not spent on the model because coincident rows would then be drawn twice.
 
-Every figure names both the case and the scenario, in its title and its
-filename, so nothing is fixed silently.
-
-Note the layers read the *current* axis limits, so set ``xlim``/``ylim`` first.
+Layers read the current axis limits, so frame the axis first.
 """
 
 from pathlib import Path
@@ -40,9 +24,10 @@ from ftr_align.metrics import row_labels
 from ftr_align.polytope import basis_from_columns, faces
 from ftr_align.viz import (
     draw_constraints,
+    draw_halfplane,
     draw_optimum,
     draw_region,
-    label_axes,
+    frame_axes,
     to_plot,
 )
 
@@ -61,27 +46,11 @@ DAM_LS, FTR_LS, MEET_LS = "solid", "dotted", "dashed"
 DAM_LW, FTR_LW = 1.8, 0.9  # model = width, so dash is free to mean contingency
 
 
-def new_axis(model, title):
-    fig, ax = plt.subplots(figsize=(6.4, 5.2))
-    ax.set_xlim(*XLIM)
-    ax.set_ylim(*YLIM)
-    ax.axhline(0, lw=0.4, c="k")
-    ax.axvline(0, lw=0.4, c="k")
-    label_axes(ax, model, xlabel=XLABEL, ylabel=YLABEL)
-    ax.set_title(title, fontsize=11)
-    return fig, ax
-
-
 def save(fig, name):
     fig.tight_layout()
     fig.savefig(OUT / f"{name}.png", dpi=140, bbox_inches="tight")
     plt.close(fig)
     print(f"wrote {name}.png")
-
-
-def slug(scenario):
-    """'(a)' -> 'a', for filenames."""
-    return scenario.strip("()")
 
 
 def width_key():
@@ -125,14 +94,36 @@ def legend(ax, extra=(), **kw):
 
 # %%
 # -------------------------------------
-# One figure per (case, scenario)
+# One figure per case, scenarios as columns
 # -------------------------------------
-# The geometry is fixed by the case; only the direction -- and so the two
-# maximisers and their supporting hyperplanes -- changes with the scenario.
+# The geometry is fixed by the case, so all three panels of a figure draw the
+# same regions and the same constraint lines; only the direction -- and so the
+# two maximisers and their supporting hyperplanes -- changes across the columns.
+# Side by side is what makes that readable: the eye holds the region still and
+# watches the optimum move.
+#
+# Shared axes, so the panels are directly comparable rather than each auto-scaled
+# to its own contents, and only the left column carries the y label.
 for case, (f_model, g_model) in toy.MODELS.items():
-    for scenario in toy.SCENARIOS:
+    fig, axes = plt.subplots(
+        1,
+        len(toy.SCENARIOS),
+        figsize=(4.8 * len(toy.SCENARIOS), 5.0),
+        sharex=True,
+        sharey=True,
+    )
+    for col, (ax, scenario) in enumerate(zip(axes, toy.SCENARIOS)):
         direction = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR).direction
-        fig, ax = new_axis(g_model, f"{case}   scenario {scenario}")
+        frame_axes(
+            ax,
+            g_model,
+            title=f"scenario {scenario}",
+            xlim=XLIM,
+            ylim=YLIM,
+            xlabel=XLABEL,
+            ylabel=YLABEL if col == 0 else "",
+            fontsize=11,
+        )
 
         # Filled but not stroked: the coloured constraint lines below already
         # trace each region's boundary, and a second outline would hide which
@@ -175,10 +166,66 @@ for case, (f_model, g_model) in toy.MODELS.items():
         draw_optimum(ax, g_model, direction, T, solver=CLEAR, color="grey", ls=DAM_LS)
         draw_optimum(ax, f_model, direction, T, solver=CLEAR, color="C4", ls=FTR_LS)
 
-        legend(ax, extra=width_key())
-        save(fig, f"toy_{case}_{slug(scenario)}")
-        # to view in notebooks
-        display(fig)
+        # One legend for the figure, on the left panel: the three columns draw
+        # the same models and the same rows, so the others would be copies.
+        if col == 0:
+            legend(ax, extra=width_key())
+
+    fig.suptitle(case, fontsize=12)
+    save(fig, f"toy_{case}")
+    # to view in notebooks
+    display(fig)
+
+# %%
+# -------------------------------------
+# Market bounds against network feasibility
+# -------------------------------------
+# Q(b) is network feasibility only.  A market also obeys bounds on the axes --
+# load served cannot be negative, solar cannot exceed nameplate -- which carry no
+# PTDF row and are given in plot coordinates.  Passing them to draw_region cuts
+# the fill; passing them to draw_halfplane draws their edges.
+_, g_model = toy.MODELS["derate"]
+SOLAR_CAP = 50.0
+
+#   L >= 0      ->  -L <= 0   ->  a = (-1, 0), c = 0
+#   q_S <= cap  ->                a = ( 0, 1), c = cap
+BOUNDS = [((-1.0, 0.0), 0.0), ((0.0, 1.0), SOLAR_CAP)]
+BOUND_STYLE = [
+    ("k", r"$L \geq 0$  (load served)"),
+    ("#C79000", rf"$q_S \leq {SOLAR_CAP:.0f}$  (solar nameplate)"),
+]
+
+fig, ax = plt.subplots(figsize=(6.4, 5.2))
+frame_axes(
+    ax,
+    g_model,
+    title="derate   g (DAM)   network feasibility under market bounds",
+    xlim=XLIM,
+    ylim=YLIM,
+    xlabel=XLABEL,
+    ylabel=YLABEL,
+    fontsize=11,
+)
+# The network region, ghosted, so what the bounds remove stays visible.
+draw_region(ax, g_model, T, color="grey", ls=DAM_LS, fill_alpha=0.10, outline=False)
+draw_region(
+    ax,
+    g_model,
+    T,
+    label=r"$\mathcal{Q}(g)$ under bounds",
+    color="grey",
+    ls=DAM_LS,
+    fill_alpha=0.35,
+    outline=False,
+    bounds=BOUNDS,
+)
+draw_constraints(ax, g_model, T, lw=DAM_LW, names=True)
+for (a, c), (colour, text) in zip(BOUNDS, BOUND_STYLE):
+    draw_halfplane(ax, a, c, label=text, color=colour, ls="dashdot", lw=1.6)
+
+legend(ax)  # one model, so no width key
+save(fig, "toy_market_bounds")
+display(fig)
 
 
 # %%
@@ -188,23 +235,37 @@ for case, (f_model, g_model) in toy.MODELS.items():
 # Every vertex of Q(b) is a realizable active set, and faces() returns it
 # labelled with the rows tight there -- so this is every congestion regime the
 # model admits, laid out on the polytope.  No scenario: it holds for all of them.
-_, g_model = toy.MODELS["dam_outage"]
-fig, ax = new_axis(g_model, "dam_outage   g (DAM)   every realizable active set")
-draw_region(ax, g_model, T, color="grey", ls="solid", fill_alpha=0.25)
-draw_constraints(ax, g_model, T, lw=0.8)
-for face in faces(g_model):
-    u = to_plot(T, face.q)
-    ax.plot(*u, marker="o", ms=7, color="k", zorder=6, ls="none")
-    ax.annotate(
-        "\n".join(row_labels(g_model, face.rows)),
-        u,
-        textcoords="offset points",
-        xytext=(9, 9),
-        fontsize=7,
-        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="none", alpha=0.75),
+regimes = [
+    (r"$\mathcal{Q}(g)$ for dam_outage", toy.MODELS["dam_outage"][1]),
+    (r"$\mathcal{Q}(f)$ for ftr_extra", toy.MODELS["extra_ftr"][0]),
+]
+for label, model in regimes:
+    fig, ax = plt.subplots(figsize=(6.4, 5.2))
+    frame_axes(
+        ax,
+        model,
+        title=f"{label}; every realizable active set",
+        xlim=(-200, 200),
+        ylim=(-200, 200),
+        xlabel=XLABEL,
+        ylabel=YLABEL,
+        fontsize=11,
     )
-legend(ax)  # one model, so no width key
-save(fig, "toy_regimes_dam_outage")
-display(fig)
+    draw_region(ax, model, T, color="grey", ls="solid", fill_alpha=0.25)
+    draw_constraints(ax, model, T, lw=0.8)
+    for face in faces(model):
+        u = to_plot(T, face.q)
+        ax.plot(*u, marker="o", ms=7, color="k", zorder=6, ls="none")
+        ax.annotate(
+            "\n".join(row_labels(model, face.rows)),
+            u,
+            textcoords="offset points",
+            xytext=(9, 9),
+            fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="none", alpha=0.75),
+        )
+    legend(ax)  # one model, so no width key
+    display(fig)
+    plt.close(fig)
 
 # %%

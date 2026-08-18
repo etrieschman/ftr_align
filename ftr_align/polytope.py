@@ -1,25 +1,14 @@
-"""Primal geometry: the V-representation of ``Q(b)``.
+"""The V-representation of ``Q(b)``: its vertices, the constraints tight at each,
+and a direction exposing it.
 
-``network`` holds the **H-representation** -- a list of half-spaces ``Kq <= b``.
-This module converts to the **V-representation**, the same polytope described by
-its extreme points, and labels each vertex with the constraints tight there and a
-direction exposing it.
+Faces of a polytope and cones of its normal fan are dual, so a vertex is a
+maximal realizable active set and any direction interior to its cone exposes it.
+Enumerating vertices therefore enumerates the regimes, without reference to any
+``y``.
 
-Why that labelling is the point.  The faces of ``Q(b)`` and the cones of its
-normal fan are dual: a vertex corresponds to a full-dimensional normal cone,
-hence to a maximal *realizable active set*, and any direction in the relative
-interior of that cone exposes it.  So enumerating vertices enumerates the active
-sets attainable at an optimum -- which is what a regime sweep wants.  In two
-dimensions, listing vertices in cyclic order and walking the normal fan by angle
-are the same traversal, so the ``d``-sweep falls out rather than being separate
-code.
-
-Scale.  By the Upper Bound Theorem a ``d``-polytope with ``m`` facets can have
-``~m^(d/2)`` vertices, so the count is polynomial in the constraints but with an
-exponent linear in the dimension (``d = n - 1`` here, after power balance).
-Adding contingencies is survivable; adding buses is not.  Above :data:`MAX_NODES`
-the *answer* is too big, not just the computation, and the right move is to
-sample realized directions instead -- a different and better-posed question.
+Scale: a ``d``-polytope with ``m`` facets has up to ``~m^(d/2)`` vertices, and
+``d = n - 1`` here.  Contingencies are survivable; buses are not.  Above
+:data:`MAX_NODES` the answer is too big, not the computation.
 """
 
 from __future__ import annotations
@@ -37,12 +26,10 @@ VERTEX_TOL = 1e-7  # numerical zero for feasibility / tightness / dedupe
 
 
 def free_basis(n: int, drop: int) -> np.ndarray:
-    """``T``: plot/parameter coordinates ``u in R^(n-1)`` -> node injections
-    ``q = T u in R^n``, eliminating coordinate ``drop`` via power balance.
+    """``T``: parameter coordinates ``u in R^(n-1)`` -> node injections ``q = T u``,
+    eliminating coordinate ``drop`` via power balance.
 
-    Column ``k`` of ``T`` is the injection pattern "one unit at the ``k``-th kept
-    node, balanced at ``drop``".  Any ``T`` with ``1^T T = 0`` is a valid basis for
-    the balanced subspace; this is the simplest one.
+    Column ``k`` is "one unit at the k-th kept node, balanced at ``drop``".
     """
     keep = [i for i in range(n) if i != drop % n]
     T = np.zeros((n, n - 1))
@@ -53,13 +40,10 @@ def free_basis(n: int, drop: int) -> np.ndarray:
 
 
 def basis_from_columns(columns) -> np.ndarray:
-    """Assemble a basis ``T`` from explicit injection patterns, one per plot axis.
+    """Assemble a basis ``T`` from explicit injection patterns, one per axis.
 
-    Each column says "what moving one unit along this axis does to the nodal
-    injections", and must be balanced.  Use this when the axes should tell a
-    story rather than name two nodes -- e.g. on the 3-node, ``(0, 1, -1)`` and
-    ``(1, -1, 0)`` give axes of *total load served* and *solar dispatch*, which
-    is the pairing the conference figures used.
+    Each column says what moving one unit along that axis does to the nodal
+    injections, and must be balanced.
     """
     T = np.asarray(columns, dtype=float).T
     if abs(T.sum(axis=0)).max() > VERTEX_TOL:
@@ -72,13 +56,11 @@ def basis_from_columns(columns) -> np.ndarray:
 def plane_system(
     model: NetworkModel, T: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The enforced constraints written in the coordinates of ``T``:
-    ``(M, c, rows)`` with ``M = K_rows @ T`` and ``c = b_rows``.
+    """The enforced constraints in the coordinates of ``T``: ``(M, c, rows)`` with
+    ``M = K_rows @ T``.
 
-    Substituting ``q = T u`` into ``k_i^T q <= b_i`` gives ``(T^T k_i)^T u <= b_i``,
-    so the reduced normals are just ``K T`` -- no special handling, which is why
-    plotting in a different basis needs no correction beyond this one product.
-    ``rows`` maps each reduced row back to its global row index.
+    Substituting ``q = T u`` turns row ``i`` into ``(T^T k_i)^T u <= b_i``, so the
+    reduced normals are just ``K T``.  ``rows`` maps back to global row indices.
     """
     if abs(np.asarray(T).sum(axis=0)).max() > VERTEX_TOL:
         raise ValueError(
@@ -89,34 +71,37 @@ def plane_system(
     return model.K[rows] @ T, model.b[rows], rows
 
 
-def is_bounded(M: np.ndarray, tol: float = VERTEX_TOL) -> bool:
-    """Whether ``{u : M u <= c}`` is bounded, i.e. its recession cone
-    ``{z : M z <= 0}`` is just the origin.  Independent of ``c``."""
-    d = M.shape[1]
-    z = cp.Variable(d)
-    obj = cp.Parameter(d)
-    problem = cp.Problem(cp.Maximize(obj @ z), [M @ z <= 0, z >= -1, z <= 1])
-    e = np.zeros(d)
-    for k in range(d):
-        for sign in (1.0, -1.0):
-            e[k] = sign
-            obj.value = e.copy()
-            problem.solve(solver=cp.HIGHS)
-            if problem.value is not None and problem.value > 1e-6:
-                return False
-        e[k] = 0.0
-    return True
+def is_bounded(M: np.ndarray) -> bool:
+    """Whether ``{u : M u <= c}`` is bounded, i.e. its recession cone ``{z : M z <= 0}``
+    is just the origin.  Independent of ``c``.
+
+    One LP, by polar duality.  The recession cone is the polar of
+    ``K = cone(rows of M)``, and a polar is trivial exactly when the cone it came
+    from is all of ``R^d`` -- that is, when the rows positively span:
+
+        rank(M) = d   and   M^T lambda = 0 for some lambda >= 1
+
+    Given such a lambda, ``-m_i = (1/lambda_i) sum_{j != i} lambda_j m_j`` puts every
+    row's negation in the cone.  The rank test is not redundant: a lone zero row
+    satisfies the LP while spanning nothing.
+    """
+    m, d = M.shape
+    if np.linalg.matrix_rank(M) < d:
+        return False
+    lam = cp.Variable(m)
+    problem = cp.Problem(cp.Minimize(0), [M.T @ lam == 0, lam >= 1])
+    problem.solve(solver=cp.HIGHS)
+    return problem.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
 
 def _polygon_2d(
     M: np.ndarray, c: np.ndarray, tol: float = VERTEX_TOL
 ) -> list[np.ndarray]:
-    """Vertices of a 2-D ``{M u <= c}``, in counter-clockwise order.
+    """Vertices of a 2-D ``{M u <= c}``, counter-clockwise.
 
-    Exact and dependency-free: every vertex is the intersection of two
-    constraints, so solve each 2x2 system, keep the feasible ones, dedupe, and
-    sort by angle about the centroid.  ``O(m^2)`` pairs, which at toy scale is
-    nothing and avoids needing a strict interior point.
+    Every vertex is the intersection of two constraints, so solve each 2x2 system,
+    keep the feasible ones, dedupe, and sort by angle.  ``O(m^2)`` pairs, exact, and
+    needs no interior point -- so it also handles a flat region, which Qhull cannot.
     """
     pts = []
     for i in range(len(M)):
@@ -142,7 +127,12 @@ def _polygon_2d(
 
 def _vertices_nd(M: np.ndarray, c: np.ndarray) -> list[np.ndarray]:
     """Vertices of a general-dimension ``{M u <= c}`` via Qhull, which needs a
-    strictly interior point -- taken as the Chebyshev centre."""
+    strictly interior point -- taken as the Chebyshev centre.
+
+    The centre comes from an LP maximising the inscribed radius ``r`` subject to
+    ``M u + r ||m_i|| <= c``.  ``r = 0`` means the region is flat in these
+    coordinates and its vertices are not well defined.
+    """
     d = M.shape[1]
     norms = np.linalg.norm(M, axis=1)
     u, r = cp.Variable(d), cp.Variable(nonneg=True)
@@ -158,8 +148,7 @@ def _vertices_nd(M: np.ndarray, c: np.ndarray) -> list[np.ndarray]:
 
 
 class Face(NamedTuple):
-    """A vertex of ``Q(b)``, the constraints tight there, and a direction that
-    exposes it."""
+    """A vertex of ``Q(b)``, the constraints tight there, and a direction exposing it."""
 
     q: np.ndarray  # vertex, in node coordinates
     rows: np.ndarray  # global row indices of K tight at q
@@ -173,15 +162,10 @@ def faces(
 ) -> list[Face]:
     """Every vertex of ``Q(b)``, with its active set and an exposing direction.
 
-    The active sets returned are exactly the ones realizable at an optimum, so
-    this enumerates the regimes without reference to any particular ``y``.  In
-    two dimensions the result comes back in cyclic order, which *is* the
-    direction sweep.
-
     The exposing direction is ``sum_{i in rows} k_i``: a strictly positive
-    combination of the generators of the vertex's normal cone, hence in that
-    cone's relative interior.  It is unnormalised, and only defined up to the
-    usual ``+c*1`` balance shift.
+    combination of the normal cone's generators, hence interior to it.  Unnormalised,
+    and defined up to the usual ``+c*1`` shift.  In 2-D the vertices come back in
+    cyclic order, which is sweep order.
     """
     n = model.network.n_nodes
     if n > MAX_NODES:
@@ -189,7 +173,7 @@ def faces(
             f"vertex enumeration refused at {n} nodes (limit {MAX_NODES}): by the "
             f"Upper Bound Theorem a {n - 1}-dimensional polytope with m facets can "
             f"have ~m^{(n - 1) // 2} vertices, so the enumeration itself is the "
-            "wrong question at this scale.  Sample realized directions instead."
+            "wrong question at this scale."
         )
     drop = model.network.slack_idx if drop is None else drop
     T = free_basis(n, drop)
@@ -210,18 +194,26 @@ def faces(
 
 
 def polygon(
-    model: NetworkModel, T: np.ndarray | None = None, tol: float = VERTEX_TOL
+    model: NetworkModel,
+    T: np.ndarray | None = None,
+    tol: float = VERTEX_TOL,
+    bounds=None,
 ) -> np.ndarray:
-    """The 2-D outline of ``Q(b)`` in the coordinates of ``T``, as an ordered
-    ``(n_vertices, 2)`` array ready to hand to a fill/plot call.
+    """The 2-D outline of ``Q(b)`` in the coordinates of ``T``, ordered and ready to
+    fill.
 
-    Only the coordinates -- no active sets, no directions.  This is what drawing
-    needs; :func:`faces` is what searching needs.
+    ``bounds`` is an optional sequence of ``(a, c)`` half-planes ``a^T u <= c`` given
+    directly in plot coordinates -- market bounds such as a generation cap -- which
+    cut the outline down.
     """
     n = model.network.n_nodes
     T = free_basis(n, model.network.slack_idx) if T is None else np.asarray(T)
     if T.shape[1] != 2:
         raise ValueError(f"polygon() needs a 2-column basis, got {T.shape[1]}")
     M, c, _ = plane_system(model, T)
+    if bounds:
+        extra = np.array([np.asarray(a, dtype=float) for a, _ in bounds])
+        M = np.vstack([M, extra])
+        c = np.concatenate([c, [float(v) for _, v in bounds]])
     verts = _polygon_2d(M, c, tol)
     return np.array(verts) if verts else np.zeros((0, 2))

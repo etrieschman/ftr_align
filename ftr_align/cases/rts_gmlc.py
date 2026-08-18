@@ -144,7 +144,7 @@ def load_network() -> PhysicalNetwork:
     )
 
 
-def branch_limits() -> dict[str, np.ndarray]:
+def _branch_limits() -> dict[str, np.ndarray]:
     """``cont``/``lte`` rating vectors (MW) in element order."""
     branch = _read_csv(_BRANCH)
     return {
@@ -161,7 +161,7 @@ def n1_contingencies(
     PTDF singular) are skipped -- matching ISO practice of excluding radial
     outages from thermal flow constraints -- and logged."""
     network = network or load_network()
-    lim = branch_limits()
+    lim = _branch_limits()
     cont, lte = lim["cont"], lim["lte"]
     ell = network.n_elements
 

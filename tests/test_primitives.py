@@ -72,7 +72,7 @@ def test_meet_is_idempotent_and_commutative():
     assert np.array_equal(ff.b, f.b)
 
 
-@pytest.mark.parametrize("case", ["derate", "extra_ftr", "dam_outage", "mixed"])
+@pytest.mark.parametrize("case", list(toy.MODELS))
 @pytest.mark.parametrize("scenario", ["(a)", "(b)", "(c)"])
 def test_meet_support_is_below_both(case, scenario):
     """Q(f^g) is contained in both, so its support value cannot exceed either --

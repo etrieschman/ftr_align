@@ -1,19 +1,12 @@
 """Plotting the feasible injection polytope, for the 3-node figures.
 
-Only the case where the picture is *exact*: after power balance the injection
-space is ``n - 1`` dimensional, so at three nodes it is a plane and nothing is
-lost.  At more nodes two coordinates are a projection, whose boundary edges are
+At three nodes power balance leaves a 2-D injection space, so the picture is
+exact.  At more nodes two coordinates are a projection, whose boundary edges are
 not images of individual constraints -- a different object, and not one these
 functions draw.
 
-Choosing coordinates costs nothing.  A basis ``T`` (with ``1^T T = 0``) turns row
-``i`` into ``(T^T k_i)^T u <= b_i``, which is just ``K T``; the constraint lines
-come out right in any basis with no correction.  Only an objective *direction*
-would need the covariant ``T^T d``, and since the paper's support-geometry figure
-is hand-drawn in TikZ, nothing here draws one.
-
-Composable rather than one big entry point: each function draws one layer onto an
-axis, so a notebook decides what a figure contains.
+One layer per call, onto an axis the caller owns.  :func:`frame_axes` must come
+first: the drawing layers clip to the current axis limits.
 """
 
 from __future__ import annotations
@@ -34,9 +27,7 @@ MEET_STYLE = dict(color="C1", ls="dashed", fill_alpha=0.0)
 def basis(model: NetworkModel, drop: int | None = None) -> np.ndarray:
     """Plot basis for a model, eliminating node ``drop`` (default: the slack).
 
-    Any ``T`` with balanced columns works; pass your own to get different axes.
-    For the 3-node, ``free_basis(3, L)`` gives ``(q_S, q_C)``, while eliminating
-    ``C`` gives the option of ``(load served, q_S)`` axes that read economically.
+    Any ``T`` with balanced columns works; pass your own for different axes.
     """
     n = model.network.n_nodes
     return free_basis(n, model.network.slack_idx if drop is None else drop)
@@ -47,15 +38,18 @@ def to_plot(T: np.ndarray, q: np.ndarray) -> np.ndarray:
     return np.linalg.lstsq(np.asarray(T), np.asarray(q), rcond=None)[0]
 
 
-def draw_region(ax, model: NetworkModel, T=None, *, label=None, outline=True, **style):
+def draw_region(
+    ax, model: NetworkModel, T=None, *, label=None, outline=True, bounds=None, **style
+):
     """Fill ``Q(b)``, and by default stroke its boundary.
 
-    Pass ``outline=False`` when :func:`draw_constraints` is also being drawn: the
-    constraint lines already trace the boundary, and stroking it again puts a
-    second colour on top of the per-element one."""
+    ``outline=False`` when :func:`draw_constraints` is also drawn -- those lines
+    already trace the boundary.  ``bounds`` cuts the fill by extra half-planes in
+    plot coordinates; pass the same ones to :func:`draw_halfplane` to draw them.
+    """
     T = basis(model) if T is None else T
     style = {**DAM_STYLE, **style}
-    verts = polygon(model, T)
+    verts = polygon(model, T, bounds=bounds)
     if len(verts) == 0:
         return verts
     closed = np.vstack([verts, verts[:1]])
@@ -79,13 +73,11 @@ def draw_region(ax, model: NetworkModel, T=None, *, label=None, outline=True, **
     return verts
 
 
-def element_color(model: NetworkModel, row: int) -> str:
-    """Colour for a constraint row, keyed by its **element**.
-
-    One colour per transmission element, so a line keeps its identity across
-    contingencies, across models, and across figures -- the convention the
-    conference figures used.  Upper and lower rows of the same element share it,
-    which is right: they are two sides of one limit."""
+def _element_color(model: NetworkModel, row: int) -> str:
+    """Colour for a constraint row, keyed by its element, so a line keeps its
+    identity across contingencies, models and figures.  Upper and lower rows of the
+    same element share it.
+    """
     return f"C{int(row) % model.ell}"
 
 
@@ -101,15 +93,11 @@ def draw_constraints(
     styles=("solid", "dashed", "dashdot", "dotted"),
     **kw,
 ):
-    """One line per enforced row, drawn right across the current axis limits.
+    """One line per enforced row, across the current axis limits.
 
-    Colour identifies the **element** and line style the **contingency**, so a
-    figure can be read without a legend once the palette is known.  Pass ``ls`` to
-    force a single style for the whole model -- useful when style is already
-    carrying the DAM/FTR distinction.
-
-    Only the upper-limit row of each (contingency, element) is labelled, so the
-    legend has one entry per line rather than two identical ones.
+    Colour is the element and line style the contingency; pass ``ls`` to force one
+    style for the whole model.  Only upper-limit rows are labelled, so the legend
+    gets one entry per line.
     """
     T = basis(model) if T is None else T
     M, c, rows = plane_system(model, T)
@@ -119,7 +107,7 @@ def draw_constraints(
 
     for a, rhs, row in zip(M, c, rows):
         row = int(row)
-        colour = colors[row % ell] if colors is not None else element_color(model, row)
+        colour = colors[row % ell] if colors is not None else _element_color(model, row)
         style = ls if ls is not None else styles[((row % half) // ell) % len(styles)]
         upper = row < half
         text = (
@@ -131,9 +119,11 @@ def draw_constraints(
 
 
 def _draw_line(ax, a, c, xlim, ylim, *, label=None, color="grey", ls="solid", **kw):
-    """The line ``a^T u = c`` clipped to the axes.  Solved for whichever
-    coordinate has the larger coefficient, so vertical lines are not a special
-    case."""
+    """The line ``a^T u = c``, clipped to the axes.
+
+    Solved for whichever coordinate has the larger coefficient, so a vertical line
+    is not a special case.
+    """
     lw = kw.get("lw", 0.9)
     if abs(a[1]) >= abs(a[0]):
         if abs(a[1]) < 1e-12:
@@ -146,12 +136,11 @@ def _draw_line(ax, a, c, xlim, ylim, *, label=None, color="grey", ls="solid", **
 
 
 def draw_optimum(ax, model: NetworkModel, direction, T=None, *, solver=None, **style):
-    """Mark the support maximiser for ``direction``, and draw the supporting
+    """Mark the support maximiser for ``direction`` and draw the supporting
     hyperplane through it.
 
-    The hyperplane is a genuine level set of the objective, so it is exact in any
-    basis; only its *perpendicularity to an arrow* would depend on the basis, and
-    no arrow is drawn."""
+    The hyperplane is a level set of the objective, so it is exact in any basis.
+    """
     T = basis(model) if T is None else T
     style = {**DAM_STYLE, **style}
     sol = SupportProblem(model, direction).solve(solver=solver, want_primal=True)
@@ -173,26 +162,60 @@ def draw_optimum(ax, model: NetworkModel, direction, T=None, *, solver=None, **s
 
 
 def draw_halfplane(ax, a, c, *, label=None, color="C2", ls="solid", lw=0.8):
-    """An extra line ``a^T u <= c`` in plot coordinates -- for bid bounds and
-    generation limits, which restrict where a market operates but are **not**
-    network feasibility and so are not part of ``Q(b)``."""
+    """A line ``a^T u <= c`` in **plot** coordinates -- market bounds such as a
+    generation cap or ``L >= 0``, which restrict the axes rather than any element's
+    flow and so are no part of ``Q(b)``.
+
+    On ``(L, q_S)`` axes, ``L >= 0`` is ``a = (-1, 0), c = 0``.
+    """
     _draw_line(ax, np.asarray(a, dtype=float), float(c),
                ax.get_xlim(), ax.get_ylim(), label=label, color=color, ls=ls, lw=lw)
+
+
+def frame_axes(
+    ax,
+    model: NetworkModel,
+    *,
+    title: str | None = None,
+    xlim=None,
+    ylim=None,
+    drop: int | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+    **title_kw,
+):
+    """Set an axis up to receive the drawing layers: limits, origin lines, axis names,
+    optional title.
+
+    Must come first -- :func:`draw_constraints` and :func:`draw_halfplane` clip to
+    the current limits.  Extra keywords go to ``set_title``.  ``ylabel=""`` blanks
+    the name on the inner column of a shared-y grid.
+    """
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.axhline(0, lw=0.4, c="k")
+    ax.axvline(0, lw=0.4, c="k")
+    label_axes(ax, model, drop=drop, xlabel=xlabel, ylabel=ylabel)
+    if title is not None:
+        ax.set_title(title, **title_kw)
+    return ax
 
 
 def label_axes(
     ax,
     model: NetworkModel,
-    T=None,
+    *,
     drop: int | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
 ):
     """Name the axes.
 
-    Defaults to reading them off a plain drop-one-node basis; pass ``xlabel`` /
-    ``ylabel`` for a basis whose axes are combinations rather than single nodes
-    (see :func:`polytope.basis_from_columns`)."""
+    Defaults to a plain drop-one-node basis; pass ``xlabel``/``ylabel`` for a basis
+    whose axes are combinations rather than single nodes.
+    """
     net = model.network
     drop = net.slack_idx if drop is None else drop
     names = net.node_names

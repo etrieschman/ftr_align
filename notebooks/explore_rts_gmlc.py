@@ -4,7 +4,7 @@ import polars as pl
 from tqdm import tqdm
 import plotly.express as px
 
-from ftr_align import SupportProblem, clear_dam
+from ftr_align import SupportProblem, clear_dam, meet
 from ftr_align import network
 from ftr_align.duality import (
     attribution_blocks,
@@ -14,7 +14,7 @@ from ftr_align.duality import (
     trade_matrix,
     trade_space,
 )
-from ftr_align.attribution import block_shares, failure_modes
+from ftr_align.metrics import gap_summary
 from ftr_align.metrics import EPS, block_table
 from ftr_align.cases import rts_gmlc
 from ftr_align.solve import CENTER
@@ -138,16 +138,16 @@ for name, model, prob in (("DAM", dam_model, dam_prob), ("FTR", ftr_model, ftr_p
     print(f"{name} support value:", round(sol.value, 1))
     print(f"{name} support rows :", index.tolist())
     print(f"{name} trade space dim:", D.shape[1])
-    display(block_table(model, blocks, block_totals(prob.data.b, sol.mu, blocks)))
+    display(block_table(model, prob.data.direction))
 
 
 # Failure modes and their block-level attribution (prop:block_underfunding).
 print("\n~~~~~~~~ Failure modes")
-print(failure_modes(ftr_model, dam_model, dam_sol.direction, solver=SOLVER))
+print(gap_summary(ftr_model, dam_model, dam_sol.direction, solver=SOLVER))
+# The mode is which model you pass first -- always the one that *loses* the
+# value, measured against the intersection (prop:block_underfunding).
+meet_model = meet(ftr_model, dam_model)
 for mode, model in (("U", ftr_model), ("V", dam_model)):
-    blocks, shares = block_shares(
-        ftr_model, dam_model, dam_sol.direction, mode=mode, solver=SOLVER
-    )
     print(f"\n{mode} by block")
-    display(block_table(model, blocks, shares, value_name=mode))
+    display(block_table(model, dam_sol.direction, meet_model, labels={"mode": mode}))
 # %%

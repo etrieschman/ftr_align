@@ -16,10 +16,11 @@ from ftr_align import clear_dam, meet
 from ftr_align.polytope import free_basis, polygon
 from ftr_align.viz import (
     basis,
+    _draw_line,
     draw_constraints,
-    draw_halfplane,
     draw_optimum,
     draw_region,
+    frame_axes,
     label_axes,
     to_plot,
 )
@@ -82,10 +83,16 @@ def test_draw_constraints_draws_one_line_per_enforced_row(ax):
 
 def test_vertical_constraints_are_not_a_special_case(ax):
     """A row with no dependence on the vertical axis plots as a vertical line;
-    solving for whichever coordinate has the larger coefficient handles it."""
+    solving for whichever coordinate has the larger coefficient handles it.
+
+    Against ``_draw_line`` directly: this is its behaviour, and the public
+    ``draw_halfplane`` that used to be the way in here was deleted for having no
+    callers -- it drew bid bounds and generation limits, which are not network
+    feasibility and which no figure ever ended up drawing."""
     before = len(ax.lines)
-    draw_halfplane(ax, [1.0, 0.0], 50.0)  # pure vertical
-    draw_halfplane(ax, [0.0, 1.0], 50.0)  # pure horizontal
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    _draw_line(ax, np.array([1.0, 0.0]), 50.0, xlim, ylim)  # pure vertical
+    _draw_line(ax, np.array([0.0, 1.0]), 50.0, xlim, ylim)  # pure horizontal
     assert len(ax.lines) - before == 2
     for line in ax.lines[before:]:
         assert np.all(np.isfinite(line.get_xydata()))
@@ -103,3 +110,41 @@ def test_a_full_figure_composes(ax):
     label_axes(ax, g)
     assert ax.get_xlabel() == "$q_{S}$"
     assert ax.get_ylabel() == "$q_{C}$"
+
+
+def test_frame_axes_sets_limits_before_the_layers_read_them(ax):
+    """The framing layer has to come first: draw_constraints clips its lines to
+    the *current* limits, so a figure that frames afterwards gets lines that stop
+    short.  This pins the contract -- frame_axes sets what it is given, and
+    defers to label_axes for the names it is not given."""
+    _, g = toy.MODELS["derate"]
+    frame_axes(ax, g, title="a title", xlim=(-10, 20), ylim=(-30, 40))
+    assert ax.get_xlim() == (-10, 20)
+    assert ax.get_ylim() == (-30, 40)
+    assert ax.get_title() == "a title"
+    assert ax.get_xlabel() == "$q_{S}$"  # no xlabel passed -> label_axes default
+
+
+def test_frame_axes_leaves_out_what_it_is_not_given(ax):
+    """Limits and title are optional, so a caller can frame only the names --
+    and ``ylabel=""`` blanks the name on the inner column of a shared-y grid."""
+    _, g = toy.MODELS["derate"]
+    ax.set_xlim(-5, 5)
+    frame_axes(ax, g, xlabel="L", ylabel="")
+    assert ax.get_xlim() == (-5, 5)  # untouched
+    assert ax.get_title() == ""
+    assert (ax.get_xlabel(), ax.get_ylabel()) == ("L", "")
+
+
+def test_label_axes_refuses_a_positional_basis(ax):
+    """``label_axes`` used to accept a ``T`` it never read.  Axis *names* depend
+    only on which node was eliminated, so the parameter is gone -- keyword-only,
+    so a stale ``label_axes(ax, model, T)`` fails loudly instead of being read as
+    ``drop``."""
+    _, g = toy.MODELS["derate"]
+    T = free_basis(3, g.network.slack_idx)
+    with pytest.raises(TypeError):
+        label_axes(ax, g, T)
+
+    label_axes(ax, g, drop=2)  # eliminate L -> the kept nodes are S and C
+    assert (ax.get_xlabel(), ax.get_ylabel()) == ("$q_{S}$", "$q_{C}$")

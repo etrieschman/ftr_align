@@ -1,23 +1,12 @@
-"""Network geometry: PTDF, contingencies (each carrying its own line limits),
-and the network model that assembles them into the stacked constraint system.
+"""Network geometry: incidence, PTDF, and the models built on them.
 
-Notation follows the journal draft:
+A :class:`NetworkModel` owns a :class:`PhysicalNetwork` and a tuple of
+:class:`Contingency`, and assembles the stacked system
 
-* ``A``  -- node-branch incidence matrix (``(n, ell)``, entries in
-  ``{-1, 0, +1}``), the *physical* topology.
-* ``H_c`` -- PTDF under contingency ``c``, mapping nodal injections ``q`` to
-  monitored flows; ``H`` stacks them over the contingencies in a fixed order.
-* ``K = [H; -H]`` -- the stacked constraint matrix.  The first ``C*ell`` rows are
-  the upper-limit constraints ``Hq <= b_upper``; the next ``C*ell`` are the
-  lower-limit constraints ``-Hq <= -b_lower``.  Rows within a block run over
-  ``(contingency, element)`` in contingency order, then element.
+    K = [H; -H]        b = [upper; lower]        Q(b) = {q : K q <= b, 1^T q = 0}
 
-A ``NetworkModel`` owns its geometry: a network plus a list of contingencies,
-each of which carries the line limits enforced *under that contingency*.  It
-derives ``K`` and the limit vector ``b``.  The FTR/SFT model ``f`` and the DAM
-model ``g`` are two such models, defined independently; comparison of their
-per-row duals needs :func:`embed` / :func:`align` to put them on a common row
-index (see those for the caveat that this requires common PTDFs).
+``b`` is a full-length vector over the model's rows, ``+inf`` where a row is
+unmonitored.
 """
 
 from __future__ import annotations
@@ -37,15 +26,10 @@ ContingencyKey = int | tuple[int, ...] | None
 # PTDF and physical topology
 # ----------------------------------------------------------------------------
 def is_connected(A: np.ndarray, key: ContingencyKey = None) -> bool:
-    """Whether the network graph is connected once ``key``'s elements are removed.
+    """Whether the network stays connected with ``outaged`` removed.
 
-    Edges are incidence columns with two nonzero endpoints; a union-find over them
-    is connected iff every node lands in one component.  Equivalently, the DC
-    bus-susceptance matrix ``A diag(b) A^T`` is a graph Laplacian whose
-    rank is ``n - (#components)``, so dropping the slack row/col leaves an
-    invertible ``(n-1)x(n-1)`` block exactly when this returns ``True``.  Outaging
-    a *bridge* (``is_connected`` ``False``) would island the network and make the
-    PTDF inverse singular -- such N-1 outages are skipped, not solved.
+    Guards against a radial outage, which islands the network and makes the PTDF
+    singular.
     """
     A = np.asarray(A, dtype=float)
     n, ell = A.shape
@@ -75,14 +59,9 @@ def is_connected(A: np.ndarray, key: ContingencyKey = None) -> bool:
 def compute_ptdf(
     A: np.ndarray, x: np.ndarray, slack_idx: int, tap: np.ndarray | None = None
 ) -> np.ndarray:
-    """DC PTDF ``H`` (``(ell, n)``) for incidence ``A`` (``(n, ell)``, entries
-    in ``{-1, 0, +1}``), reactances ``x`` (``(ell,)``), and a slack bus.
+    """DC PTDF: sensitivity of each element's flow to each nodal injection.
 
-    ``tap`` is an optional per-element off-nominal magnitude ratio (default ones).
-    A transformer with ratio ``t`` scales the branch susceptance, ``b_eff =
-    (1/x)/t`` (the DC flow is ``(theta_i - theta_j)/(x t)``), so it enters as
-    ``y_line = diag(1/(x t))``.  Phase-shift taps are a separate additive flow
-    offset, not a PTDF change, and are absent from the data we load.
+    Susceptance is ``1/(x * tap)``, so a magnitude transformer tap scales it.
     """
     A = np.asarray(A, dtype=float)
     x = np.asarray(x, dtype=float)
@@ -259,14 +238,10 @@ class NetworkModel:
 # Result-conversion tools: put two models' per-row vectors on a common index
 # ----------------------------------------------------------------------------
 def with_limits(model: NetworkModel, b: np.ndarray) -> NetworkModel:
-    """``model`` with a new limit vector, rebuilding its :class:`Contingency`
-    objects so they stay consistent with ``b``.
+    """``model`` with new limits, rebuilding its ``Contingency`` objects too.
 
-    ``dataclasses.replace(model, b=...)`` would be shorter and is wrong: it leaves
-    ``model.contingencies`` carrying the *old* limits, so anything reading limits
-    from the contingency list rather than from ``b`` -- :func:`align`, most
-    obviously -- would silently use stale values.  ``K`` is unaffected by a limit
-    change, so it is reused rather than recomputed.
+    Necessary because ``align`` reads limits off that list, so replacing only ``b``
+    would leave a repaired model re-aligning to its old values.
     """
     b = np.asarray(b, dtype=float)
     half, ell = model.n_rows // 2, model.ell
@@ -307,22 +282,11 @@ def align(*models: NetworkModel) -> list[NetworkModel]:
 
 
 def meet(f: NetworkModel, g: NetworkModel) -> NetworkModel:
-    """The intersection model ``f ^ g`` (``def:intersection``): the network model
-    enforcing both models' limits at the tighter of the two.
+    """``f ^ g``: the model whose feasible set is ``Q(f) inter Q(g)``.
 
-    ``Q(f ^ g) = Q(f) n Q(g)`` and ``J(f ^ g) = J(f) u J(g)``
-    (``prop:intersection_polytope``), so it is the model each market would adopt
-    if it had to respect the other's, and the reference point for both failure
-    modes: ``U = h(f;y) - h(f^g;y)``, ``V = h(g;y) - h(f^g;y)``.
-
-    **The intersection is a stack, not an elementwise minimum.** In general
-    ``Q(f) n Q(g)`` is cut by ``[K_f; K_g] q <= [f; g]``.  Under Assumption 1 the
-    two models share a ``K``, so after :func:`align` the stack holds identical row
-    pairs -- ``K_i q <= f_i`` and ``K_i q <= g_i`` -- which is *exactly*
-    ``K_i q <= min(f_i, g_i)``.  The collapse is algebraic, not a tolerance, and
-    costs no extra rows, which is why the minimum is the implementation here.
-    When ERCOT breaks the shared-``K`` assumption there is no minimum to take and
-    this must fall back to the genuine stack; the guard below is where that goes.
+    Under common PTDFs the stacked system has identical row pairs and collapses
+    exactly to the elementwise minimum after alignment.  Raises where the PTDFs
+    differ, which is where the stack fallback would go.
     """
     f_u, g_u = align(f, g)
     if not np.allclose(f_u.K, g_u.K):

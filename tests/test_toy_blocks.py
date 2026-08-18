@@ -37,17 +37,17 @@ def _gap(f, g, scenario="(a)"):
 
 def test_full_repair_recovers_the_whole_failure_mode():
     """prop:repair_basic -- U^(full index) == U, for every case."""
-    from ftr_align import failure_modes
+    from ftr_align import gap_summary
 
     for case in toy.MODELS:
         f, g = toy.MODELS[case]
         _, d = _gap(f, g)
-        modes = failure_modes(f, g, d, solver=CLEAR)
+        modes = gap_summary(f, g, d, solver=CLEAR)
         every_row = np.arange(len(meet(f, g).b))
-        assert repair_value(f, g, d, every_row, mode="U", solver=CLEAR) == pytest.approx(
+        assert repair_value(f, meet(f, g), d, every_row, solver=CLEAR) == pytest.approx(
             modes["U"], abs=1e-3
         )
-        assert repair_value(f, g, d, every_row, mode="V", solver=CLEAR) == pytest.approx(
+        assert repair_value(g, meet(f, g), d, every_row, solver=CLEAR) == pytest.approx(
             modes["V"], abs=1e-3
         )
 
@@ -57,8 +57,7 @@ def test_redundant_face_and_trade():
     # the two parallel circuits are electrically identical
     assert np.allclose(sys.K[sys.rows_upper(None)[toy.SL]], sys.K[sys.rows_upper(None)[1]])
 
-    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
-    prob = SupportProblem(sys, dam.direction)
+    prob = SupportProblem(sys, _gap(*toy.REDUNDANT_MODELS["derate"])[1])
     # value still matches the oracle (electrically the base toy)
     assert prob.solve(solver=CLEAR).value == pytest.approx(32625, abs=2)
 
@@ -81,8 +80,7 @@ def test_redundant_face_and_trade():
 
 def test_redundant_single_block():
     sys = toy.REDUNDANT_MODELS["derate"][1]
-    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
-    prob = SupportProblem(sys, dam.direction)
+    prob = SupportProblem(sys, _gap(*toy.REDUNDANT_MODELS["derate"])[1])
     blocks = attribution_blocks(prob)
     assert len(blocks) == 1
     assert len(blocks[0]) == 2
@@ -94,8 +92,7 @@ def test_block_total_is_face_invariant():
     """W_{G_r} is the same for any optimal certificate, even though individual
     multipliers differ (CLARABEL spreads weight, HiGHS puts it on one twin)."""
     sys = toy.REDUNDANT_MODELS["derate"][1]
-    dam = clear_dam(sys, toy.SCENARIOS["(a)"], solver=CLEAR)
-    prob = SupportProblem(sys, dam.direction)
+    prob = SupportProblem(sys, _gap(*toy.REDUNDANT_MODELS["derate"])[1])
 
     mu_clarabel = prob.solve(solver={"solver": "CLARABEL"}).mu
     mu_highs = prob.solve(solver={"solver": "HIGHS"}).mu

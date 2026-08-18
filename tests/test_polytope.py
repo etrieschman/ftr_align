@@ -18,6 +18,7 @@ from ftr_align.polytope import (
     polygon,
 )
 from ftr_align.cases import toy
+from toy_facts import find_case, nesting, uniform_scale
 
 CLEAR = {"solver": "CLARABEL"}
 
@@ -61,14 +62,19 @@ def test_plane_system_rejects_an_unbalanced_basis():
 # ---------------------------------------------------------------------------
 # polygon
 # ---------------------------------------------------------------------------
-def test_toy_polytope_is_the_expected_parallelogram():
-    """SL (75) and SC (25) bound the 3-node base case; CL (300) never binds.
-    The four corners are exact."""
-    _, g = toy.MODELS["derate"]
-    V = polygon(g)
-    expected = {(-100.0, -25.0), (-50.0, -125.0), (100.0, 25.0), (50.0, 125.0)}
-    assert {tuple(np.round(v, 6)) for v in V} == expected
-    assert _area(V) == pytest.approx(22500.0)
+@pytest.mark.parametrize("case", list(toy.MODELS))
+def test_polygon_vertices_are_feasible_and_tight(case):
+    """Every vertex the outline returns is network-feasible and sits on at least
+    two constraints -- which is what a vertex of a 2-D polytope is."""
+    _, g = toy.MODELS[case]
+    T = free_basis(3, g.network.slack_idx)
+    M, c, _ = plane_system(g, T)
+    V = polygon(g, T)
+    assert len(V) >= 3
+    for u in V:
+        slack = c - M @ u
+        assert np.all(slack >= -1e-6)
+        assert int(np.sum(np.abs(slack) <= 1e-6)) >= 2
 
 
 def test_polygon_vertices_come_back_in_convex_order():
@@ -81,41 +87,67 @@ def test_polygon_vertices_come_back_in_convex_order():
     assert np.all(np.diff(angles) > 0)
 
 
-def test_derate_scales_the_polytope():
-    """A uniform derate is a scaling of the region, so its area scales by
-    alpha^2 in two dimensions."""
-    f, g = toy.MODELS["derate"]
-    assert _area(polygon(f)) == pytest.approx(0.75**2 * _area(polygon(g)))
+def test_a_uniform_derate_scales_the_polytope():
+    """A uniform derate scales the region, so its area scales by alpha^2 in two
+    dimensions.  Alpha is read off the limit vectors, not assumed."""
+    _, f, g = find_case(lambda f, g: uniform_scale(f, g) is not None,
+                        what="a uniform derate")
+    alpha = uniform_scale(f, g)
+    assert _area(polygon(f)) == pytest.approx(alpha**2 * _area(polygon(g)))
 
 
-@pytest.mark.parametrize(
-    "case,tighter", [("derate", 0), ("extra_ftr", 0), ("dam_outage", 1), ("mixed", 0)]
-)
-def test_meet_region_is_the_tighter_model(case, tighter):
-    """The picture agrees with cor:canonical: for a one-signed difference the
-    intersection *is* the tighter model, visibly."""
-    pair = toy.MODELS[case]
-    assert _area(polygon(meet(*pair))) == pytest.approx(
-        _area(polygon(pair[tighter])), rel=1e-9
-    )
+@pytest.mark.parametrize("case", list(toy.MODELS))
+def test_meet_region_matches_the_nesting_of_the_pair(case):
+    """cor:canonical with the premise derived rather than tabulated: when one
+    model's limits dominate the other's, the intersection *is* the tighter
+    region.
+
+    When neither dominates, all that follows is containment in both.  Not strict
+    containment: `nesting` reads the limit *vectors*, and a row that crosses can
+    still be redundant given the others, so the two regions can coincide even
+    though the H-representations differ."""
+    f, g = toy.MODELS[case]
+    a_f, a_g = _area(polygon(f)), _area(polygon(g))
+    a_meet = _area(polygon(meet(f, g)))
+    match nesting(f, g):
+        case "f":
+            assert a_meet == pytest.approx(a_f, rel=1e-9)
+        case "g":
+            assert a_meet == pytest.approx(a_g, rel=1e-9)
+        case _:
+            assert a_meet <= min(a_f, a_g) + 1e-6
 
 
-def test_extra_contingency_adds_facets():
-    """dam_outage's DAM model is the parallelogram with two corners cut off by
-    the SC contingency -- six vertices, strictly smaller."""
-    f, g = toy.MODELS["dam_outage"]
-    assert len(polygon(f)) == 4
-    assert len(polygon(g)) == 6
-    assert _area(polygon(g)) < _area(polygon(f))
+def test_a_crossing_pair_has_a_meet_smaller_than_both():
+    """The pair that is NOT one-signed: each model is tighter on some row, so
+    neither limit vector dominates.  cor:canonical does not apply and block_table
+    refuses the pair in either order -- but geometrically all that is guaranteed
+    is Q(f ^ g) inside both, since a crossing row can be redundant."""
+    _, f, g = find_case(lambda f, g: nesting(f, g) == "cross", what="a crossing pair")
+    a_f, a_g, a_meet = (_area(polygon(m)) for m in (f, g, meet(f, g)))
+    assert a_meet <= a_f + 1e-6
+    assert a_meet <= a_g + 1e-6
 
 
-# ---------------------------------------------------------------------------
-# faces: vertices with their active sets and exposing directions
-# ---------------------------------------------------------------------------
-def test_faces_label_each_vertex_with_two_tight_rows():
-    _, g = toy.MODELS["derate"]
+@pytest.mark.parametrize("case", list(toy.MODELS))
+def test_the_contained_model_is_never_larger(case):
+    """Enforcing more can only cut corners off: the nested model has no more
+    area, and where it is strictly smaller it has no fewer vertices."""
+    f, g = toy.MODELS[case]
+    inner, outer = {"f": (f, g), "g": (g, f)}.get(nesting(f, g), (None, None))
+    if inner is None:
+        pytest.skip("this pair crosses; neither is the inner model")
+    a_in, a_out = _area(polygon(inner)), _area(polygon(outer))
+    assert a_in <= a_out + 1e-6
+    if a_in < a_out - 1e-6:
+        assert len(polygon(inner)) >= len(polygon(outer))
+
+
+@pytest.mark.parametrize("case", list(toy.MODELS))
+def test_faces_label_each_vertex_with_two_tight_rows(case):
+    _, g = toy.MODELS[case]
     found = faces(g)
-    assert len(found) == 4
+    assert len(found) >= 3
     for face in found:
         assert isinstance(face, Face)
         assert len(face.rows) == 2  # a vertex in 2-D is two tight constraints
@@ -159,6 +191,15 @@ def test_is_bounded_detects_an_open_direction():
     M, _, _ = plane_system(g, T)
     assert is_bounded(M)
     assert not is_bounded(M[:1])  # a single half-space bounds nothing
+    assert not is_bounded(M[:3])  # half the rows leave a recession direction
+
+
+def test_is_bounded_needs_the_rank_test_not_just_the_lp():
+    """The positive-span LP alone is not enough.  A degenerate row satisfies
+    ``M^T lambda = 0`` at ``lambda = 1`` while spanning nothing, so dropping the
+    rank check would call these bounded."""
+    assert not is_bounded(np.zeros((1, 2)))  # a row that constrains nothing
+    assert not is_bounded(np.array([[1.0, 0.0], [-1.0, 0.0]]))  # only x is pinned
 
 
 def test_unbounded_model_is_refused():

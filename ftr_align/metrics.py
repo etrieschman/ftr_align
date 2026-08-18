@@ -1,17 +1,7 @@
-"""Reporting: everything that turns computed results into a table for a reader.
+"""Tables: the only layer that labels rows and emits DataFrames.
 
-The split this module defines, and the rest of the package respects:
-
-* ``solve`` / ``duality`` / ``attribution`` compute.  They take and return numpy
-  arrays and plain floats, carry no labels, and never build a DataFrame.
-* ``metrics`` reports.  It is the only place that joins row indices to
-  ``(contingency, element, side)`` names, applies display thresholds, and emits
-  polars frames.
-
-The reason for the line is that the computed objects are co-indexed vectors over
-the rows of ``K`` -- that indexing is the invariant the whole package leans on,
-and it survives only if labels stay out of it.  It also keeps the numerical layer
-testable against the memos' propositions directly, without a table in between.
+Everything below returns numpy arrays and plain floats; nothing below builds a
+frame or knows a contingency's name.
 """
 
 from __future__ import annotations
@@ -21,54 +11,29 @@ from collections.abc import Iterable
 import numpy as np
 import polars as pl
 
-from .attribution import differences, floor, modes_from_values, row_shares
-from .duality import J_star, attribution_blocks
-from .network import NetworkModel, align, contingency_label, element_label, meet
-from .solve import CENTER, SupportProblem, SupportSolution
+from .attribution import (
+    _nested_pair,
+    block_share_range,
+    differences,
+    floor,
+    primal_invariant,
+    row_shares,
+)
+from .duality import (
+    J_star,
+    attribution_blocks,
+    block_totals,
+    trade_matrix,
+    trade_space,
+)
+from .network import NetworkModel, align, meet
+from .solve import CENTER, VERTEX, SupportProblem
 
 EPS = 1e-9
-NET_DUAL_TOL = 0.5  # drop sub-dollar net duals from the reported table
-
-
-def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
-    """Collapse stacked ``mu`` to a signed net dual per (contingency, element):
-    ``mu_upper - mu_lower``.  Rows with ~zero net are dropped.
-
-    The column is ``mu_signed`` rather than ``mu`` because the package carries two
-    different things under that letter: this one, and the raw stacked multipliers
-    that :func:`row_table` reports one row per side.  They are not interchangeable
-    and the name should say which you are holding.
-
-    This is the *reporting* convention only.  The computation keeps ``mu`` in
-    stacked-nonnegative form throughout, because that is what makes ``Lambda(y)``
-    a cone, lets a row be degenerate on both sides at once, and keeps upper and
-    lower as the distinct columns of ``C`` they are."""
-    names = model.network.element_names
-    records = []
-    for c in model.contingencies:
-        net = mu[model.rows_upper(c.key)] - mu[model.rows_lower(c.key)]
-        for e in range(model.ell):
-            if abs(net[e]) > NET_DUAL_TOL:
-                records.append(
-                    {
-                        "contingency": contingency_label(c.key, names),
-                        "element": element_label(names, e),
-                        "mu_signed": float(net[e]),
-                    }
-                )
-    return pl.DataFrame(
-        records,
-        schema={
-            "contingency": pl.Utf8,
-            "element": pl.Utf8,
-            "mu_signed": pl.Float64,
-        },
-    )
 
 
 def row_labels(model: NetworkModel, rows: Iterable[int]) -> list[str]:
-    """``contingency:element:side`` for each row index, for block membership
-    listings."""
+    """``contingency:element:side`` for each row index."""
     labels = model.labels()
     out = []
     for i in rows:
@@ -77,201 +42,258 @@ def row_labels(model: NetworkModel, rows: Iterable[int]) -> list[str]:
     return out
 
 
-def _block_shape(blocks: list[np.ndarray], suffix: str = "") -> dict:
-    """The four numbers describing what an attribution admits.
-
-    Blocks *partition* the priced rows ``J*(b;y)``, so ``n_blocks`` counts groups
-    rather than ambiguity: two rows that cannot trade give TWO singleton blocks,
-    which is the fully-identified case.  Ambiguity is ``dim_trade_space`` (0 =
-    every row separately attributable) or equivalently ``max_block`` (1 = the
-    same thing).  Read ``n_blocks`` against ``n_priced``: equal means all
-    singletons."""
-    sizes = [len(rows) for rows in blocks]
-    return {
-        f"n_priced{suffix}": sum(sizes),
-        f"n_blocks{suffix}": len(blocks),
-        f"max_block{suffix}": max(sizes, default=0),
-        f"dim_trade_space{suffix}": sum(sizes) - len(blocks),
-    }
-
-
 def _by_row(groups) -> dict[int, object]:
-    """Invert an iterable of ``(label, row indices)`` into ``{row: label}``."""
+    """Invert ``(label, row indices)`` pairs into ``{row: label}``."""
     return {int(i): label for label, rows in groups for i in rows}
 
 
-def support_summary(
-    problem: SupportProblem, labels: dict | None = None, solver=None
+def summary(
+    model: NetworkModel,
+    direction: np.ndarray,
+    target: NetworkModel | None = None,
+    labels: dict | None = None,
+    solver=None,
 ) -> dict:
-    """One flat record for a **single** support solve: its value and the shape of
-    the attribution it admits.
+    """One flat record for one model at one direction -- :func:`block_table`
+    aggregated, same arguments.
 
-    The one-model counterpart of :func:`run_row`, for when there is no ``(f, g)``
-    pair -- a designed limit vector, or a pattern probed at a posited direction.
-    ``n_blocks`` / ``max_block`` / ``dim_trade_space`` are exactly the N1
-    quantities ("do blocks bind?"): all-singletons means attribution is
-    effectively constraint-level, one giant block means constraint-level
-    attribution is not identified at all.
+    Always: ``h`` and the shape of the attribution it admits (``n_priced``,
+    ``n_blocks``, ``max_block``, ``dim_trade_space``).  All singletons means
+    attribution is effectively constraint-level; one large block means it is not
+    identified there at all.
 
-    One solve.  The blocks come off its ``mu`` rather than a second solve, so the
-    certificate must be an analytic-centre one -- hence the :data:`CENTER`
-    default."""
-    sol = problem.solve(solver=CENTER if solver is None else solver)
-    blocks = attribution_blocks(problem, J_star(problem, sol))
-    return {**(labels or {}), "h": sol.value, **_block_shape(blocks)}
+    With a ``target`` contained in ``model``: ``h_target`` and the failure mode
+    ``loss = h - h_target``, plus its ``floor`` and ``floor_ratio``.
+
+    A dict, so a sweep is ``pl.DataFrame([summary(...) for ...])``."""
+    table = block_table(model, direction, target, solver=solver)
+    sizes = table["size"]
+    out = {
+        **(labels or {}),
+        "h": float(table["value"].sum()),
+        "n_priced": int(sizes.sum()),
+        "n_blocks": table.height,
+        "max_block": int(sizes.max()) if table.height else 0,
+        "dim_trade_space": int(table["dim_trade_space"].sum()),
+    }
+    if target is None:
+        return out
+
+    model_u, target_u = _nested_pair(model, target)
+    mu = SupportProblem(model_u, direction).solve(solver=CENTER).mu
+    loss = float(table["loss"].sum())
+    value = floor(model_u, target_u, mu)
+    # "Zero" for a failure mode is below the noise of the subtraction that made
+    # it, not below EPS: it is a difference of support values of order 1e4.
+    zero = 1e-6 * max(1.0, abs(out["h"]))
+    return out | {
+        "h_target": out["h"] - loss,
+        "loss": loss,
+        "floor": value,
+        "floor_ratio": None if abs(loss) < zero else value / loss,
+    }
 
 
-def run_row(
+def gap_summary(
     f: NetworkModel,
     g: NetworkModel,
     direction: np.ndarray,
     labels: dict | None = None,
     solver=None,
 ) -> dict:
-    """One flat record summarising a single ``(model pair, direction)`` cell.
+    """One flat record per ``(model pair, direction)``: both failure modes and
+    the gap, with each mode's floor and attribution shape.
 
-    Deliberately thin: a dict, so a sweep is ``pl.DataFrame([run_row(...) for
-    ...])`` and adding a column is adding a key.  Every table T1-T5 and N1-N6
-    wants is a groupby over a frame of these plus :func:`row_table`, so the
-    intent is that this grows as the analysis asks for more, not that it is
-    complete now.
+        U = h(f) - h(f^g)      value f loses on adopting the intersection
+        V = h(g) - h(f^g)      value g loses on adopting it
+        Delta = h(f) - h(g) = U - V
 
-    **Three solves**, one per distinct polytope: the aligned ``f``, the aligned
-    ``g``, and their intersection.  Everything else -- the failure modes, ``J*``,
-    the blocks, the floors -- is read off those three certificates rather than
-    re-derived, which is why the models are aligned once at the top: ``f`` and
-    ``f_u`` are the same polytope (alignment only adds ``+inf`` rows), so solving
-    both would be solving one LP twice.
-
-    :data:`CENTER` by default and effectively required: the block columns need an
-    analytic-centre certificate, and using one certificate for the floor and a
-    different one for the partition would mix two points of the same optimal
-    face."""
-    opts = CENTER if solver is None else solver
-    f_u, g_u = align(f, g)
-    sols = {
-        "U": SupportProblem(f_u, direction).solve(solver=opts),
-        "V": SupportProblem(g_u, direction).solve(solver=opts),
+    The pair-level composer, and the only thing that reports both modes at once:
+    it is :func:`summary` called against ``f ^ g`` from each side, suffixed
+    ``_U`` and ``_V``.  ``relative_gap`` is ``Delta / h(g)``."""
+    m = meet(f, g)
+    per = {
+        mode: summary(model, direction, m, solver=solver)
+        for mode, model in (("U", f), ("V", g))
     }
-    h_meet = SupportProblem(meet(f, g), direction).solve(solver=opts).value
-    modes = modes_from_values(sols["U"].value, sols["V"].value, h_meet)
+    h_f, h_g = per["U"]["h"], per["V"]["h"]
+    h_meet = h_f - per["U"]["loss"]
 
-    out = {**(labels or {}), **modes}
-    # The gap as a fraction of DAM merchandising surplus -- Delta and h_g are both
-    # already here, so this is a reading aid rather than a new quantity.
-    out["relative_gap"] = (
-        None if abs(modes["h_g"]) < EPS else modes["Delta"] / modes["h_g"]
-    )
-    # A failure mode is a difference of support values of order 1e4, so "zero"
-    # means "below the noise of that subtraction", not below EPS.  Without this
-    # a mode that is exactly zero reports a meaningless floor ratio.
-    zero = 1e-6 * max(1.0, abs(modes["h_f"]), abs(modes["h_g"]))
-
-    for mode, model in (("U", f_u), ("V", g_u)):
-        problem = SupportProblem(model, direction)
-        sol = sols[mode]
-        blocks = attribution_blocks(problem, J_star(problem, sol))
-        value = floor(f, g, sol.mu, mode=mode)
+    out = {
+        **(labels or {}),
+        "h_f": h_f,
+        "h_g": h_g,
+        "h_meet": h_meet,
+        "U": per["U"]["loss"],
+        "V": per["V"]["loss"],
+        "Delta": h_f - h_g,
+    }
+    out["relative_gap"] = None if abs(h_g) < EPS else out["Delta"] / h_g
+    for mode, row in per.items():
         out |= {
-            f"floor_{mode}": value,
-            # The share of the failure mode the floor explains -- the number that
-            # decides whether the floor is an instrument or a footnote (T1).
-            # Reported per mode because only *level* differences carry a floor at
-            # all, so a case can have a meaningful ratio in one mode and a
-            # structural zero in the other.
-            f"floor_ratio_{mode}": (
-                None if abs(modes[mode]) < zero else value / modes[mode]
-            ),
-            **_block_shape(blocks, suffix=f"_{mode}"),
+            f"floor_{mode}": row["floor"],
+            f"floor_ratio_{mode}": row["floor_ratio"],
+            **{
+                f"{k}_{mode}": row[k]
+                for k in ("n_priced", "n_blocks", "max_block", "dim_trade_space")
+            },
         }
     return out
 
 
-def row_table(
-    f: NetworkModel,
-    g: NetworkModel,
+def constraint_table(
+    model: NetworkModel,
     direction: np.ndarray,
+    target: NetworkModel | None = None,
     labels: dict | None = None,
-    mode: str = "U",
     solver=None,
 ) -> pl.DataFrame:
-    """Per-constraint detail for one cell: limits, the certificate, the row's
-    attributed share, and which block it landed in.
+    """One row per priced constraint -- :func:`block_table` without the grouping.
 
-    Restricted to rows that either disagree or carry a share -- the full stacked
-    index is mostly zeros and unenlightening.
+    Same shape and the same two attributions, at row granularity instead of block
+    granularity.  Restricted to rows in ``J*(b;y)`` plus, with a ``target``, the
+    rows on which the two models disagree.
 
-    Two solves: the mode's model, and the intersection for ``q^``.  ``mu`` here is
-    the **raw stacked** certificate, one row per side -- not the signed net that
-    :func:`net_dual` reports."""
-    f_u, g_u = align(f, g)
-    m = meet(f, g)
-    model = f_u if mode == "U" else g_u
+    Always present, from ``model`` alone:
+
+        value = b_i mu_i        sums to h(model)
+
+    Only with a ``target``, which must be contained in ``model``:
+
+        loss  = mu_i [b_i - (K q)_i]    sums to h(model) - h(target)
+
+    plus ``target_limit`` and ``difference`` -- whether the row disagrees on a
+    *level* (both finite) or on *coverage* (one unmonitored), and which mode it
+    feeds.
+
+    Neither column is identified row by row where a block has more than one
+    member; ``block`` says which rows those are, and :func:`block_table` is the
+    honest unit.  ``mu`` is the raw stacked certificate, one row per side."""
+    if target is not None:
+        model, target = _nested_pair(model, target)
+
     problem = SupportProblem(model, direction)
-    # CENTER regardless of `solver`: this mu defines J* and so the blocks.
-    # `solver` drives the primal solve for q^, which is engine-free.
     sol = problem.solve(solver=CENTER)
-    q_meet = SupportProblem(m, direction).solve(solver=solver, want_primal=True).q
-    mu = sol.mu
-    share = row_shares(f, g, mu, q_meet, mode=mode)
+    blocks = attribution_blocks(problem, J_star(problem, sol))
+    block_of = _by_row(enumerate(blocks))
 
-    block_of = _by_row(enumerate(attribution_blocks(problem, J_star(problem, sol))))
-    kind = _by_row(differences(f, g).items())
+    extra: dict[int, dict] = {}
+    keep = set(block_of)
+    if target is not None:
+        q_target = SupportProblem(target, direction).solve(
+            solver=solver, want_primal=True
+        ).q
+        share = row_shares(model, target, sol.mu, q_target)
+        kind = _by_row(differences(model, target).items())
+        keep |= set(kind) | set(np.flatnonzero(np.abs(share) > EPS).tolist())
+        for i in keep:
+            extra[i] = {
+                "target_limit": float(target.b[i]),
+                "difference": kind.get(i),
+                "loss": float(share[i]),
+            }
 
-    keep = sorted(set(kind) | set(np.where(np.abs(share) > EPS)[0].tolist()))
     base = model.labels()
-    records = [
-        {
-            **(labels or {}),
-            "constraint": i,
-            "contingency": base["contingency"][i],
-            "element": base["element"][i],
-            "side": base["side"][i],
-            "f_i": float(f_u.b[i]),
-            "g_i": float(g_u.b[i]),
-            "meet_i": float(m.b[i]),
-            "difference": kind.get(i),
-            "mu": float(mu[i]),
-            "share": float(share[i]),
-            "block": block_of.get(i),
-        }
-        for i in map(int, keep)
-    ]
-    return pl.DataFrame(records)
+    return pl.DataFrame(
+        [
+            {
+                **(labels or {}),
+                "block": block_of.get(i),
+                "constraint": i,
+                "contingency": base["contingency"][i],
+                "element": base["element"][i],
+                "side": base["side"][i],
+                "limit": float(model.b[i]),
+                "mu": float(sol.mu[i]),
+                "value": float(model.b[i] * sol.mu[i]) if np.isfinite(model.b[i]) else 0.0,
+                **extra.get(i, {}),
+            }
+            for i in sorted(map(int, keep))
+        ]
+    )
 
 
 def block_table(
     model: NetworkModel,
-    blocks: list[np.ndarray],
-    values: np.ndarray,
-    value_name: str = "W",
+    direction: np.ndarray,
+    target: NetworkModel | None = None,
     labels: dict | None = None,
+    solver=None,
 ) -> pl.DataFrame:
-    """One row per attribution block: its members, size, and attributed value.
+    """One row per attribution block, carrying two different quantities.
 
-    ``values`` is whatever the block carries -- ``W_{J_r}`` from
-    ``duality.block_totals`` when reporting a support value, or ``U_B`` from
-    ``attribution.block_shares`` when reporting a failure mode."""
-    records = [
-        {
-            "block": r,
-            "members": row_labels(model, rows),
-            "rows": [int(i) for i in rows],
-            "size": len(rows),
-            value_name: float(v),
-        }
-        for r, (rows, v) in enumerate(zip(blocks, values))
-    ]
+    Always present, from ``model`` alone:
+
+        value = sum_{i in J_r} b_i mu_i        sums to h(model)
+
+    ``value`` has no range column -- it is constant over the whole optimal dual
+    face, even where the individual ``mu_i`` are not.
+
+    Only with a ``target``, which must be contained in ``model``:
+
+        loss  = sum_{i in B} mu_i [b_i - (K q)_i]   sums to h(model) - h(target)
+
+    read at ``q``, a maximiser for ``target``.  ``loss_lo``/``loss_hi`` are the
+    range as ``q`` moves over ``target``'s optimal face, and ``identified`` says
+    whether that range is a point.
+
+    The failure mode is which model you pass first: ``(f, d, f^g)`` gives U,
+    ``(g, d, f^g)`` gives V.  ``labels`` adds constant columns.
+
+    One solve without a target, three with, whatever the block count."""
+    if target is not None:
+        model, target = _nested_pair(model, target)
+
+    problem = SupportProblem(model, direction)
+    sol = problem.solve(solver=CENTER)
+    blocks = attribution_blocks(problem, J_star(problem, sol))
+    W = block_totals(problem.data.b, sol.mu, blocks)
+
+    extra: list[dict] = [{} for _ in blocks]
+    if target is not None:
+        target_problem = SupportProblem(target, direction)
+        q_target = target_problem.solve(solver=CENTER, want_primal=True).q
+        share = row_shares(model, target, sol.mu, q_target)
+        base = target_problem.solve(solver=VERTEX, want_primal=True)
+        j_target = J_star(target_problem)
+        for slot, rows in zip(extra, blocks):
+            lo, hi = block_share_range(
+                model, target, direction, sol.mu, rows, solver=solver, base=base
+            )
+            slot.update(
+                loss=float(share[rows].sum()),
+                loss_lo=lo,
+                loss_hi=hi,
+                identified=primal_invariant(
+                    model, target, direction, sol.mu, rows, j_target=j_target
+                ),
+            )
+
     out = pl.DataFrame(
-        records,
-        schema={
-            "block": pl.Int64,
-            "members": pl.List(pl.Utf8),
-            "rows": pl.List(pl.Int64),
-            "size": pl.Int64,
-            value_name: pl.Float64,
-        },
+        [
+            {
+                **(labels or {}),
+                "block": r,
+                "members": row_labels(model, rows),
+                "rows": [int(i) for i in rows],
+                "size": len(rows),
+                "value": float(W[r]),
+                "dim_trade_space": int(
+                    trade_space(trade_matrix(problem, rows)).shape[1]
+                ),
+                **slot,
+            }
+            for r, (rows, slot) in enumerate(zip(blocks, extra))
+        ]
     )
-    if labels:
-        out = out.with_columns(**{k: pl.lit(v) for k, v in labels.items()})
-    return out
+
+    def _frac(column: str) -> pl.Expr:
+        # "Zero" for a failure mode is below the noise of the subtraction that
+        # produced it, not below EPS.  Typed null so the U and V frames stack.
+        total = out[column].sum()
+        if abs(total) < 1e-6 * max(1.0, abs(out["value"].sum())):
+            return pl.lit(None, dtype=pl.Float64)
+        return pl.col(column) / total
+
+    out = out.with_columns(value_frac=_frac("value"))
+    return out if target is None else out.with_columns(loss_frac=_frac("loss"))
