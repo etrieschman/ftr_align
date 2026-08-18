@@ -30,7 +30,7 @@ import numpy as np
 
 from .duality import J_star, attribution_blocks, in_span, primal_face_range
 from .network import NetworkModel, align, meet, with_limits
-from .solve import SupportProblem
+from .solve import CENTER, SupportProblem, SupportSolution
 
 
 def _h(model: NetworkModel, direction: np.ndarray, solver=None) -> float:
@@ -49,10 +49,24 @@ def failure_modes(
     Three support solves.  Both modes are nonnegative because ``Q(f^g)`` is
     contained in each of ``Q(f)`` and ``Q(g)``; ``Delta > 0`` forces ``U > 0`` and
     ``Delta < 0`` forces ``V > 0``, but both can be strictly positive at once --
-    which is exactly what the realized gap conceals."""
-    h_meet = _h(meet(f, g), direction, solver)
-    h_f = _h(f, direction, solver)
-    h_g = _h(g, direction, solver)
+    which is exactly what the realized gap conceals.
+
+    Three solves because there are three distinct polytopes; nothing here is
+    reducible.  A caller that has already solved them should call
+    :func:`modes_from_values` on the values it holds rather than this."""
+    return modes_from_values(
+        h_f=_h(f, direction, solver),
+        h_g=_h(g, direction, solver),
+        h_meet=_h(meet(f, g), direction, solver),
+    )
+
+
+def modes_from_values(h_f: float, h_g: float, h_meet: float) -> dict[str, float]:
+    """The failure-mode arithmetic on three support values already in hand.
+
+    Split out from :func:`failure_modes` so a composer that has solved ``f``,
+    ``g`` and ``f ^ g`` for their multipliers gets the modes for free instead of
+    solving all three a second time."""
     return {
         "h_f": h_f,
         "h_g": h_g,
@@ -81,6 +95,7 @@ def repair_value(
     rows,
     mode: str = "U",
     solver=None,
+    base: float | None = None,
 ) -> float:
     """``U^(S)`` (or ``V^(S)``): the failure-mode value that disappears when the
     limits on ``S = rows`` are replaced by the **intersection** limits.
@@ -92,13 +107,18 @@ def repair_value(
 
     Not additive across disjoint sets, in either direction
     (``prop:repair_nonadditive``), which is why constraint-by-constraint repair
-    reports do not order upgrades (``rem:linediff``)."""
+    reports do not order upgrades (``rem:linediff``).
+
+    Two solves, but only the second depends on ``S``: the unrepaired support
+    ``h(model)`` is the same for every subset.  Pass it as ``base`` when sweeping
+    ``S`` -- a monotonicity check over four nested sets otherwise pays for it four
+    times.  Engine-free, since only support *values* are involved."""
     f_u, g_u = align(f, g)
     m = meet(f, g)
     model = f_u if mode == "U" else g_u
-    return _h(model, direction, solver) - _h(
-        repaired(model, m, rows), direction, solver
-    )
+    if base is None:
+        base = _h(model, direction, solver)
+    return base - _h(repaired(model, m, rows), direction, solver)
 
 
 # ----------------------------------------------------------------------------
@@ -205,17 +225,27 @@ def block_shares(
     model that loses the value, not of its counterpart.  Every ``U_B`` is
     invariant across the optimal dual face at fixed ``q^``
     (``prop:dual_invariance``); invariance across the choice of ``q^`` is the
-    separate, conditional claim tested by :func:`primal_invariant`."""
+    separate, conditional claim tested by :func:`primal_invariant`.
+
+    Two solves: the mode's own model, and the intersection for ``q^``.  The
+    blocks come off the first solve's ``mu`` rather than a third solve.
+
+    The certificate solve is :data:`CENTER` regardless of ``solver``, because its
+    ``mu`` defines ``J*`` -- the same requirement :func:`J_star` has always
+    enforced -- and because using one certificate for the shares and another for
+    the partition would mix two points of the same optimal face.  ``solver``
+    controls the *primal* solve for ``q^``, which is engine-free: any point of
+    the intersection optimum will do."""
     f_u, g_u = align(f, g)
     model = f_u if mode == "U" else g_u
     m = meet(f, g)
 
     problem = SupportProblem(model, direction)
-    mu = problem.solve(solver=solver).mu
+    sol = problem.solve(solver=CENTER)
     q_meet = SupportProblem(m, direction).solve(solver=solver, want_primal=True).q
 
-    blocks = attribution_blocks(problem)
-    share = row_shares(f, g, mu, q_meet, mode=mode)
+    blocks = attribution_blocks(problem, J_star(problem, sol))
+    share = row_shares(f, g, sol.mu, q_meet, mode=mode)
     return blocks, np.array([float(share[rows].sum()) for rows in blocks])
 
 
@@ -238,6 +268,7 @@ def primal_invariant(
     rows,
     mode: str = "U",
     solver=None,
+    j_meet: np.ndarray | None = None,
 ) -> bool:
     """``prop:primal_invariance`` -- whether a block's share is the same at every
     intersection optimum, i.e. whether ``sum_{i in B} mu_i k_i`` lies in
@@ -250,10 +281,15 @@ def primal_invariant(
 
     Note it holds *vacuously* whenever ``span{1} + row(K_{J*(f^g;y)})`` is all of
     ``R^n``, i.e. whenever the intersection optimum is a vertex.  It has content
-    only when that face has positive dimension."""
+    only when that face has positive dimension.
+
+    ``J*(f^g;y)`` does not depend on the block, so pass ``j_meet`` when asking
+    this of every block in turn -- otherwise the same intersection solve is paid
+    for once per block."""
     m = meet(f, g)
     w, _ = _block_weights(f, g, mu, rows, mode)
-    j_meet = J_star(SupportProblem(m, direction))
+    if j_meet is None:
+        j_meet = J_star(SupportProblem(m, direction))
     return in_span(np.vstack([np.ones(m.K.shape[1]), m.K[j_meet]]), w)
 
 
@@ -265,6 +301,7 @@ def block_share_range(
     rows,
     mode: str = "U",
     solver=None,
+    base: SupportSolution | None = None,
 ) -> tuple[float, float]:
     """The interval a block's share spans as the intersection optimum ``q^``
     ranges over the optimal face (``rem:reporting``: two LPs per flagged block).
@@ -272,9 +309,15 @@ def block_share_range(
     ``U_B`` is affine in ``q^`` with coefficient ``-w``, so this is
     :func:`duality.primal_face_range` at ``w``, re-centred on the block share and
     with the ends swapped by the sign.  Collapses to a point exactly when
-    :func:`primal_invariant` holds."""
+    :func:`primal_invariant` holds.
+
+    The face being ranged over is the intersection's and does not depend on the
+    block, so pass ``base`` (a :data:`VERTEX` solve of ``f ^ g``) when looping
+    blocks; otherwise that base LP is re-solved once per block."""
     w, const = _block_weights(f, g, mu, rows, mode)
-    rng = primal_face_range(SupportProblem(meet(f, g), direction), w, solver=solver)
+    rng = primal_face_range(
+        SupportProblem(meet(f, g), direction), w, solver=solver, base=base
+    )
     return const - rng.hi, const - rng.lo
 
 

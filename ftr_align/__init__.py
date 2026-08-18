@@ -29,7 +29,7 @@ from .solve import (
     solve_support_cvxpy,
 )
 from .attribution import differences, failure_modes
-from .metrics import alignment_summary, dual_summary, net_dual, row_table, run_row
+from .metrics import net_dual, row_table, run_row
 
 __all__ = [
     "Contingency",
@@ -49,8 +49,6 @@ __all__ = [
     "solve_support_cvxpy",
     "differences",
     "failure_modes",
-    "alignment_summary",
-    "dual_summary",
     "net_dual",
     "row_table",
     "run_row",

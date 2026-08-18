@@ -37,7 +37,10 @@ TABLE_III = {
 
 
 def _as_dict(df) -> dict:
-    return {(r["contingency"], r["element"]): r["mu"] for r in df.iter_rows(named=True)}
+    return {
+        (r["contingency"], r["element"]): r["mu_signed"]
+        for r in df.iter_rows(named=True)
+    }
 
 
 @pytest.mark.parametrize("key", list(TABLE_III))

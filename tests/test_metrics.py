@@ -30,12 +30,18 @@ def test_run_row_matches_the_underlying_quantities(case):
     modes = failure_modes(f, g, d, solver=CLEAR)
 
     assert row["case"] == case
+    # run_row solves the *aligned* models (it needs mu on the aligned index for
+    # the floor); failure_modes solves the unaligned ones.  Same polytope, but a
+    # different LP -- the aligned one carries extra rows pinned to mu == 0 -- so
+    # the interior-point solver lands at a slightly different point.  Compare at
+    # the scale the support values carry, not bit-for-bit.
+    scale = max(1.0, abs(modes["h_f"]), abs(modes["h_g"]))
     for key in ("U", "V", "Delta", "h_f", "h_g", "h_meet"):
-        assert row[key] == pytest.approx(modes[key], rel=1e-9, abs=1e-6)
+        assert row[key] == pytest.approx(modes[key], abs=1e-6 * scale)
     for mode in ("U", "V"):
         if row[f"floor_ratio_{mode}"] is not None:
             assert row[f"floor_ratio_{mode}"] == pytest.approx(
-                row[f"floor_{mode}"] / modes[mode]
+                row[f"floor_{mode}"] / modes[mode], abs=1e-6 * scale
             )
         # dim ker C is rows-minus-blocks only because blocks partition J*
         assert row[f"dim_trade_space_{mode}"] >= 0

@@ -24,7 +24,13 @@ import numpy as np
 from scipy.linalg import null_space, orth, qr
 
 from .network import NetworkModel, align
-from .solve import Lambda_star, SupportProblem, network_constraints
+from .solve import (
+    CENTER,
+    Lambda_star,
+    SupportProblem,
+    SupportSolution,
+    network_constraints,
+)
 
 FACE_TOL = 1e-6  # slack on the optimal-value constraint defining the face
 SUPPORT_TOL = 1e-4  # mu > tol decides membership of J*; must exceed FACE_TOL leak
@@ -139,6 +145,7 @@ def primal_face_range(
     weights: np.ndarray,
     solver=None,
     tol: float = FACE_TOL,
+    base: SupportSolution | None = None,
 ) -> PrimalFaceRange:
     """Range of ``weights^T q`` over the **primal** optimal face
     ``argmax_{q in Q(b)} d^T q`` -- the mirror of :func:`robust_bounds`, which
@@ -163,12 +170,26 @@ def primal_face_range(
     That relaxation leaks: a point face reports a width of order
     :func:`face_leak`, not zero.  Test ``width`` against that, never against a
     bare absolute tolerance.
+
+    Pass ``base`` to reuse a base solve across several weight vectors on the same
+    problem -- the usual case, since a per-block reporting loop asks for a range
+    on the same face once per block.  It must be a vertex solution, for the same
+    reason the function forces HiGHS on itself.
     """
     opts = solver if isinstance(solver, dict) else {}
     lp_opts = {**opts, "solver": "HIGHS"}
     data = problem.data
     active = data.active
-    value = problem.solve(solver=lp_opts).value
+    if base is None:
+        base = problem.solve(solver=lp_opts)
+    if base.engine.upper() != lp_opts["solver"]:
+        raise ValueError(
+            f"primal_face_range runs its face LPs on {lp_opts['solver']}, but the "
+            f"base solution came from {base.engine or 'an unnamed solver'}.  The "
+            "optimal-face cut is a razor-thin slab pinned to the base value, so "
+            "the two must come from the same engine."
+        )
+    value = base.value
     slack = tol * max(1.0, abs(value))
 
     weights = np.asarray(weights, dtype=float)
@@ -225,18 +246,36 @@ def in_span(rows: np.ndarray, target: np.ndarray, tol: float = SPAN_TOL) -> bool
     return bool(np.linalg.norm(residual) <= tol * norm)
 
 
-def J_star(problem: SupportProblem, tol: float = SUPPORT_TOL) -> np.ndarray:
+def J_star(
+    problem: SupportProblem,
+    sol: SupportSolution | None = None,
+    tol: float = SUPPORT_TOL,
+) -> np.ndarray:
     """``J*(b;y)``, the dual-optimal support, from a single interior-point solve
     -- ~100x cheaper than the :func:`robust_bounds` face-LP loop, which is needed
     only when the lo/hi *ranges* themselves are wanted.
 
     By Goldman-Tucker strict complementarity an interior-point method converges
     to the analytic center of the optimal dual face, whose support is *exactly*
-    ``J*``.  **CLARABEL is required and not overridable**: the result is exact
-    only for an interior-point solver -- a simplex vertex (e.g. HiGHS) gives a
-    strict subset of ``J*`` (it misses degenerate rows)."""
-    mu = problem.solve(solver={"solver": "CLARABEL"}).mu
-    return np.where(mu > tol)[0]
+    ``J*``.  **A relative-interior certificate is required** (``sol.interior``):
+    every point of the face's relative interior has the same maximal support, so
+    that -- not the analytic centre specifically -- is what this needs.  A simplex
+    vertex gives a strict subset, missing the degenerate rows.
+
+    Pass ``sol`` when the problem has already been solved -- which is the usual
+    case, since whatever wanted ``J*`` generally wanted ``mu`` too.  It is checked
+    rather than trusted: a vertex certificate raises instead of silently
+    returning too small a support."""
+    if sol is None:
+        sol = problem.solve(solver=CENTER)
+    if not sol.interior:
+        raise ValueError(
+            "J_star needs a certificate from the relative interior of the optimal "
+            f"dual face, but this solution ({sol.engine or 'unnamed solver'}) does "
+            "not declare interior=True.  A vertex gives a strict subset of J*, "
+            "missing the degenerate rows."
+        )
+    return np.where(sol.mu > tol)[0]
 
 
 # ----------------------------------------------------------------------------
@@ -308,9 +347,11 @@ def attribution_blocks(
     Orchestration only -- ``J*`` (one CLARABEL solve), then ``C``, then the
     matroid components of :func:`connected_blocks`, whose column positions are
     mapped back to rows of ``K``.  Pass a precomputed ``index`` to reuse a support
-    you already have.  Reporting lives in ``metrics.block_table``."""
+    you already have -- ``J_star(problem, sol)`` off a solution in hand is the
+    way to avoid a second solve here.  Reporting lives in
+    ``metrics.block_table``."""
     if index is None:
-        index = J_star(problem)  # CLARABEL: support via strict complementarity
+        index = J_star(problem)  # CENTER: support via strict complementarity
     cols = connected_blocks(trade_matrix(problem, index))
     return [np.asarray([int(index[c]) for c in group]) for group in cols]
 

@@ -2,7 +2,7 @@
 import numpy as np
 import polars as pl
 
-from ftr_align import SupportProblem, clear_dam, dual_summary
+from ftr_align import SupportProblem, clear_dam
 from ftr_align.attribution import block_shares, failure_modes
 from ftr_align.duality import (
     J_star,
@@ -14,16 +14,11 @@ from ftr_align.duality import (
 )
 from ftr_align.metrics import block_table, row_labels, row_table, run_row
 from ftr_align.cases import toy
+from ftr_align.solve import CENTER
 
-CLEAR = {"solver": "CLARABEL"}  # interior-point → analytic-center certificate (paper numbers)
-
-def show_blocks(problem, model, mu=None, index=None, solver=CLEAR):
-    """Blocks with their attributed value W_{J_r}: compute in duality, label in
-    metrics."""
-    mu = problem.solve(solver=solver).mu if mu is None else mu
-    blocks = attribution_blocks(problem, index=index)
-    return block_table(model, blocks, block_totals(problem.data.b, mu, blocks))
-
+# CENTER is the library's name for {"solver": "CLARABEL"} -- the analytic-centre
+# certificate.  Required for J* and anything built on it (blocks, trade space),
+# and the convention the paper's numbers follow.
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
@@ -46,9 +41,9 @@ print(f"\n~~~~~~ Test scenario:")
 print(f"pattern={PATTERN}, scenario={SCENARIO}")
 f_model, g_model = toy.REDUNDANT_MODELS[PATTERN]
 scenario = toy.SCENARIOS[SCENARIO]
-dam = clear_dam(g_model, scenario, solver=CLEAR)
-h_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR)  # DAM
-h_f = SupportProblem(f_model, dam.direction).solve(solver=CLEAR)  # FTR/SFT
+dam = clear_dam(g_model, scenario, solver=CENTER)
+h_g = SupportProblem(g_model, dam.direction).solve(solver=CENTER)  # DAM
+h_f = SupportProblem(f_model, dam.direction).solve(solver=CENTER)  # FTR/SFT
 print("DAM_MS =", round(dam.merch_surp, 1))
 print("d = K.T@y =", dam.direction)
 print(f"h(g) = MS_DAM = {h_g.value:,.0f}")
@@ -68,14 +63,14 @@ print(f"Δ  = h(f)-h(g) = {h_f.value - h_g.value:,.0f}")
 runs = []
 for case, (f_model, g_model) in toy.MODELS.items():
     for scenario_name, scenario in toy.SCENARIOS.items():
-        dam = clear_dam(g_model, scenario, solver=CLEAR)
+        dam = clear_dam(g_model, scenario, solver=CENTER)
         runs.append(
             run_row(
                 f_model,
                 g_model,
                 dam.direction,
                 labels={"case": case, "scenario": scenario_name},
-                solver=CLEAR,
+                solver=CENTER,
             )
         )
 runs = pl.DataFrame(runs).with_columns(pl.col(pl.Float64).round(1))
@@ -109,88 +104,48 @@ display(
 )
 
 # %%
-# Table II: dual attribution
-for model in [toy.MODELS, toy.REDUNDANT_MODELS]:
-    blocks = []
-    for vname, (f_model, g_model) in model.items():
-        for sname, scenario in toy.SCENARIOS.items():
-            dam = clear_dam(g_model, scenario, solver=CLEAR)
-            sol_f = SupportProblem(f_model, dam.direction).solve(solver=CLEAR)
-            sol_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR)
-            blocks.append(
-                dual_summary(
-                    f_model,
-                    sol_f,
-                    g_model,
-                    sol_g,
-                    labels={"variation": vname, "scenario": sname},
-                )
-            )
-    blocks_df = (
-        pl.concat(blocks)
-        .melt(
-            id_vars=["variation", "scenario", "contingency", "element"], value_name="mu"
-        )
-        .pivot(
-            index=["variation", "scenario", "variable"],
-            on=["contingency", "element"],
-            values="mu",
-        )
-        .sort(by=["variation", "scenario", "variable"])
-    )
-    display(blocks_df)
-
-
-# %%
 PATTERN = "mixed"
 SCENARIO = "(a)"
 print(f"PATTERN={PATTERN}, SCENARIO={SCENARIO}\n")
 # Robust duals & attribution blocks (redundant variant)
 f_model, g_model = toy.REDUNDANT_MODELS[PATTERN]
-dam = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CLEAR)
+dam = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CENTER)
 dam_prob = SupportProblem(g_model, dam.direction)
 ftr_prob = SupportProblem(f_model, dam.direction)
 
-# DAM model
-lo, hi = robust_bounds(dam_prob, solver=CLEAR)
-index = J_star(dam_prob)
-C = trade_matrix(dam_prob, index)
-D = trade_space(C)
-print("~~~~~~~~ DAM model")
-print("DAM support value:", round(dam_prob.solve(solver=CLEAR).value, 1))
-print("DAM support rows :", index.tolist())
-print("DAM mu ranges    :", [(round(lo[i], 1), round(hi[i], 1)) for i in index])
-print("DAM trade space dim:", D.shape[1])
-display(show_blocks(dam_prob, g_model, index=index))
+# One CENTER solve per model carries everything: the value, mu, J* by strict
+# complementarity, the blocks built on J*, and the block totals.  robust_bounds
+# is the exception -- its face LPs run on HiGHS and its base solve is pinned to
+# that engine, so it cannot share this certificate and does its own.
+for name, model, prob in (("DAM", g_model, dam_prob), ("FTR", f_model, ftr_prob)):
+    sol = prob.solve(solver=CENTER)
+    index = J_star(prob, sol)
+    blocks = attribution_blocks(prob, index)
+    D = trade_space(trade_matrix(prob, index))
+    lo, hi = robust_bounds(prob, solver=CENTER)
 
-
-# FTR model
-lo, hi = robust_bounds(ftr_prob, solver=CLEAR)
-index = J_star(ftr_prob)
-C = trade_matrix(ftr_prob, index)
-D = trade_space(C)
-print("\n~~~~~~~~ FTR model")
-print("FTR support value:", round(ftr_prob.solve(solver=CLEAR).value, 1))
-print("FTR support rows :", index.tolist())
-print("FTR mu ranges    :", [(round(lo[i], 1), round(hi[i], 1)) for i in index])
-print("FTR trade space dim:", D.shape[1])
-display(show_blocks(ftr_prob, f_model, index=index))
+    print(f"\n~~~~~~~~ {name} model")
+    print(f"{name} support value:", round(sol.value, 1))
+    print(f"{name} support rows :", index.tolist())
+    print(f"{name} mu ranges    :", [(round(lo[i], 1), round(hi[i], 1)) for i in index])
+    print(f"{name} trade space dim:", D.shape[1])
+    display(block_table(model, blocks, block_totals(prob.data.b, sol.mu, blocks)))
 
 
 # Failure modes and their block-level attribution.  U decomposes over the blocks
 # of the FTR support problem, V over those of the DAM one (prop:block_underfunding).
-d = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CLEAR).direction
+d = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CENTER).direction
 print("\n~~~~~~~~ Failure modes")
-print(failure_modes(f_model, g_model, d, solver=CLEAR))
+print(failure_modes(f_model, g_model, d, solver=CENTER))
 for mode, model in (("U", f_model), ("V", g_model)):
-    blocks, shares = block_shares(f_model, g_model, d, mode=mode, solver=CLEAR)
+    blocks, shares = block_shares(f_model, g_model, d, mode=mode, solver=CENTER)
     print(f"\n{mode} by block")
     display(block_table(model, blocks, shares, value_name=mode))
 
 # Per-constraint detail: limits, the difference kind, the certificate, the row's
 # share, and the block it landed in.  Only rows that disagree or carry value.
 print("\n~~~~~~~~ Per-constraint detail (V)")
-display(row_table(f_model, g_model, d, mode="V", solver=CLEAR))
+display(row_table(f_model, g_model, d, mode="V", solver=CENTER))
 
 # %%
 
@@ -213,14 +168,14 @@ from ftr_align.viz import (
 SCEN = "(a)"
 fig, axes = plt.subplots(1, len(toy.MODELS), figsize=(4.4 * len(toy.MODELS), 4.2))
 for ax, (case, (f_model, g_model)) in zip(axes, toy.MODELS.items()):
-    d = clear_dam(g_model, toy.SCENARIOS[SCEN], solver=CLEAR).direction
+    d = clear_dam(g_model, toy.SCENARIOS[SCEN], solver=CENTER).direction
     ax.set_xlim(-170, 170)
     ax.set_ylim(-210, 210)
     draw_region(ax, g_model, label=r"$\mathcal{Q}(g)$  DAM", **DAM_STYLE)
     draw_region(ax, f_model, label=r"$\mathcal{Q}(f)$  FTR", **FTR_STYLE)
     draw_region(ax, meet(f_model, g_model), label=r"$\mathcal{Q}(f \wedge g)$", **MEET_STYLE)
-    draw_optimum(ax, g_model, d, solver=CLEAR, **DAM_STYLE)
-    draw_optimum(ax, f_model, d, solver=CLEAR, **FTR_STYLE)
+    draw_optimum(ax, g_model, d, solver=CENTER, **DAM_STYLE)
+    draw_optimum(ax, f_model, d, solver=CENTER, **FTR_STYLE)
     label_axes(ax, g_model)
     ax.axhline(0, lw=0.4, c="k")
     ax.axvline(0, lw=0.4, c="k")

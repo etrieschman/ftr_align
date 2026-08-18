@@ -4,7 +4,7 @@ import polars as pl
 from tqdm import tqdm
 import plotly.express as px
 
-from ftr_align import SupportProblem, clear_dam, dual_summary
+from ftr_align import SupportProblem, clear_dam
 from ftr_align import network
 from ftr_align.duality import (
     attribution_blocks,
@@ -17,8 +17,13 @@ from ftr_align.duality import (
 from ftr_align.attribution import block_shares, failure_modes
 from ftr_align.metrics import EPS, block_table
 from ftr_align.cases import rts_gmlc
+from ftr_align.solve import CENTER
 
-SOLVER = {"solver": "HiGHS"}
+# One engine throughout.  Anything touching J* -- the attribution blocks, the
+# trade space -- needs the analytic-centre certificate, and simplex measured only
+# ~25% faster on the value-only sweep (191ms vs 240ms per solve), which is not
+# worth running two kinds of certificate through one notebook.
+SOLVER = CENTER
 
 pl.Config.set_tbl_rows(40)
 np.set_printoptions(precision=3, suppress=True)
@@ -49,8 +54,13 @@ ftr_cont = base + [cont[i + 1] for i in rng.choice(len(cont) - 1, 25, replace=Fa
 dam_model = network.NetworkModel.build(network=net, contingencies=dam_cont)
 ftr_model = network.NetworkModel.build(network=net, contingencies=ftr_cont)
 
+# NOTE (efficiency): this loop is the scaling bottleneck and is due a rework.
+# Per interval it clears the DAM and then solves both support problems on a
+# ~28,800-row K, and it does that for every hour in the window.  Nothing here is
+# reused across intervals even though the models -- and so K -- never change.
+# Worth revisiting: warm-starting from the previous interval's basis, restricting
+# to an active set rather than the full stacked K, and batching the clearings.
 interval_rows = []
-dual_rows = []
 interval_start = rts_gmlc.interval_index(8, 5, 1)
 interval_end = rts_gmlc.interval_index(8, 15, 1)
 intervals = np.arange(interval_start, interval_end, 1, dtype=int)
@@ -65,20 +75,41 @@ for interval in tqdm(intervals):
             "interval": interval,
             "MS_DAM": sol_g.value,
             "Delta": sol_f.value - sol_g.value,
-            "eta": None if abs(sol_g.value) < EPS else sol_f.value / sol_g.value,
+            # Delta as a fraction of DAM merchandising surplus.
+            "relative_gap": (
+                None
+                if abs(sol_g.value) < EPS
+                else (sol_f.value - sol_g.value) / sol_g.value
+            ),
         }
     )
-    dual_rows.append(
-        dual_summary(
-            ftr_model,
-            sol_f,
-            dam_model,
-            sol_g,
-            labels={"interval": interval},
-        )
+# relative_gap is None wherever MS_DAM is ~0, and a window where that holds
+# throughout would otherwise infer a Null-dtype column that arithmetic rejects.
+interval_df = pl.DataFrame(interval_rows, schema_overrides={"relative_gap": pl.Float64})
+
+# %%
+# ---------------------------------
+# Summary across intervals
+# ---------------------------------
+# Delta is signed: positive is underfunding exposure, negative is lost hedge
+# value, and a window can contain both -- so the extremes matter more than the
+# mean.
+display(
+    interval_df.select(
+        pl.len().alias("intervals"),
+        pl.col("MS_DAM").mean().alias("MS_DAM_mean"),
+        pl.col("Delta").mean().alias("Delta_mean"),
+        pl.col("Delta").min().alias("Delta_min"),
+        pl.col("Delta").max().alias("Delta_max"),
+        (pl.col("Delta") > 0).sum().alias("intervals_underfunded"),
+        pl.col("relative_gap").abs().max().alias("relative_gap_absmax"),
     )
-interval_df = pl.DataFrame(interval_rows)
-dual_df = pl.concat(dual_rows, how="vertical")
+)
+display(interval_df.sort("Delta", descending=True).head(10))
+
+px.line(
+    interval_df, x="interval", y="Delta", title="Alignment gap by interval"
+).show()
 
 # %%
 # ---------------------------------
@@ -94,36 +125,20 @@ dam_sol = clear_dam(
 dam_prob = SupportProblem(dam_model, dam_sol.direction)
 ftr_prob = SupportProblem(ftr_model, dam_sol.direction)
 
-# inspect DAM model.  J_star gets J*(b;y) from one CLARABEL solve (strict
-# complementarity) -- ~50-130x cheaper than the robust_bounds face-LP loop, which
-# we'd need only for the lo/hi ranges.  Pass index to skip it in attribution.
-dam_dual = dam_prob.solve(solver={"solver": "CLARABEL"})
-index = J_star(dam_prob)
-C = trade_matrix(dam_prob, index)
-D = trade_space(C)
-print("~~~~~~~~ DAM model")
-print("DAM support value:", round(dam_dual.value, 1))
-print("DAM support rows :", index.tolist())
-print("DAM trade space dim:", D.shape[1])
-dam_blocks = attribution_blocks(dam_prob, index=index)
-dam_attr = block_table(dam_model, dam_blocks,
-                         block_totals(dam_prob.data.b, dam_dual.mu, dam_blocks))
-display(dam_attr)
+# One CENTER solve per model carries the value, mu, J* (strict complementarity),
+# the blocks and their totals.  At ~28,800 rows the saving is not cosmetic: this
+# used to solve each problem twice, once here and again inside J_star.
+for name, model, prob in (("DAM", dam_model, dam_prob), ("FTR", ftr_model, ftr_prob)):
+    sol = prob.solve(solver=CENTER)
+    index = J_star(prob, sol)
+    blocks = attribution_blocks(prob, index)
+    D = trade_space(trade_matrix(prob, index))
 
-
-# inspect FTR model
-ftr_dual = ftr_prob.solve(solver={"solver": "CLARABEL"})
-index = J_star(ftr_prob)
-C = trade_matrix(ftr_prob, index)
-D = trade_space(C)
-print("\n~~~~~~~~ FTR model")
-print("FTR support value:", round(ftr_dual.value, 1))
-print("FTR support rows :", index.tolist())
-print("FTR trade space dim:", D.shape[1])
-ftr_blocks = attribution_blocks(ftr_prob, index=index)
-ftr_attr = block_table(ftr_model, ftr_blocks,
-                         block_totals(ftr_prob.data.b, ftr_dual.mu, ftr_blocks))
-display(ftr_attr)
+    print(f"\n~~~~~~~~ {name} model")
+    print(f"{name} support value:", round(sol.value, 1))
+    print(f"{name} support rows :", index.tolist())
+    print(f"{name} trade space dim:", D.shape[1])
+    display(block_table(model, blocks, block_totals(prob.data.b, sol.mu, blocks)))
 
 
 # Failure modes and their block-level attribution (prop:block_underfunding).

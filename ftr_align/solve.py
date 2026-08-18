@@ -27,6 +27,28 @@ Solver seam: ``solve(solver=...)`` takes ``None | dict | custom solver``.
 straight into ``cp.Problem.solve`` as its options (e.g.
 ``{"solver": "CLARABEL", "verbose": True}``).  Anything else is a custom solver,
 called as ``solver.solve(problem) -> SupportSolution``.
+
+**Certificates are not interchangeable.**  The support *value* is unique, but
+``mu`` is not: on a degenerate optimal face an interior-point method returns the
+analytic centre and a simplex method returns a vertex.  Which one you hold
+decides whether a downstream result is right, so a :class:`SupportSolution`
+carries ``interior`` saying which kind it is, and consumers that care check it:
+
+* ``interior=True`` -- required for ``J*`` and everything built on it (blocks,
+  trade space, block totals).  Strict complementarity identifies ``J*`` at any
+  point of the optimal face's *relative interior*, all of which share the same
+  maximal support; a vertex gives a strict subset.  :data:`CENTER` asks the
+  built-in backend for one (CLARABEL returns the analytic centre, which is an
+  interior point -- the stronger property, and the one the paper's numbers
+  follow when a degenerate face makes the split non-unique).
+* The face-range LPs (``robust_bounds``, ``primal_face_range``) instead need a
+  base solve from the *same engine they themselves run*, since their razor-thin
+  optimal-face slab is pinned to its value.  That is a question about ``engine``,
+  not about ``center``.  :data:`VERTEX` names it.
+
+``interior`` is declared by whoever solved, not inferred from a list of known
+solver names -- so a solver written later says what its own certificate is and
+needs no change here.  Anything that only reads ``.value`` is free of all this.
 """
 
 from __future__ import annotations
@@ -38,6 +60,10 @@ import cvxpy as cp
 import numpy as np
 
 from .network import NetworkModel
+
+# Named solver options, so a call site reads as intent rather than configuration.
+CENTER = {"solver": "CLARABEL"}  # analytic-centre certificate: J*, blocks
+VERTEX = {"solver": "HIGHS"}  # simplex vertex: the face-range LPs
 
 ZERO_TOL = 1e-7
 
@@ -95,6 +121,16 @@ class SupportSolution(NamedTuple):
     status: str
     q: np.ndarray | None = None  # primal optimizer (node injections), if requested
     binding: np.ndarray | None = None  # (n_rows,) bool: mu > tol  (the support I(b;d))
+    engine: str = ""  # solver that produced this `mu`, for messages; "" if unknown
+    # Whether `mu` lies in the *relative interior* of the optimal dual face, and
+    # so whether `mu > 0` identifies J* (Goldman-Tucker).  Interior, not centre:
+    # every relative-interior point has the same maximal support, so that is the
+    # whole requirement -- the analytic centre is merely the particular interior
+    # point an interior-point method lands on.  A *declaration by whoever solved*,
+    # not something looked up from `engine`: a custom solver knows what its own
+    # certificate is and says so here.  Defaults to False, so a solver that says
+    # nothing cannot stand in for one that does.
+    interior: bool = False
 
 
 # ----------------------------------------------------------------------------
@@ -130,8 +166,10 @@ def solve_support_cvxpy(
     if (~active).any():
         constraints.append(mu[~active] == 0)
     objective = cp.Minimize(data.b[active] @ mu[active])
-    cp.Problem(objective, constraints).solve(**opts)
+    lp = cp.Problem(objective, constraints)
+    lp.solve(**opts)
 
+    engine = lp.solver_stats.solver_name
     mu_value = np.asarray(mu.value, dtype=float)
     mu_value[~active] = 0.0
     return SupportSolution(
@@ -141,6 +179,12 @@ def solve_support_cvxpy(
         status="solved",
         q=_solve_primal(problem, opts) if want_primal else None,
         binding=mu_value > ZERO_TOL,
+        # The engine cvxpy actually ran, not the one that was asked for -- `opts`
+        # may name none at all, and a bare solve() defaults to CLARABEL.
+        engine=engine,
+        # This backend is the one place a cvxpy engine name is turned into the
+        # property; a custom solver declares `interior` for itself.
+        interior=engine.upper() == CENTER["solver"],
     )
 
 
