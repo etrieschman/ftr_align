@@ -123,9 +123,11 @@ in your head. A typical session:
 ```python
 f, g = toy.MODELS["mixed"]                # an (FTR, DAM) pair
 d = clear_dam(g, scenario).direction      # y*, and d = K^T y*
-gap_summary(f, g, d)                      # Delta, U, V, floors   (a dict)
-block_table(g, d, meet(f, g))             # per block: W and U_B
-constraint_table(f, g, d, mode="V")       # per constraint, underneath
+summary(g, d)                             # one model: h + attribution shape
+summary(g, d, meet(f, g))                 # + one mode: loss, floor
+gap_summary(f, g, d)                      # both modes: Delta, U, V, floors
+block_table(g, d, meet(f, g))             # per block:      value and loss
+constraint_table(g, d, meet(f, g))        # per constraint: value and loss
 ```
 
 ## Layout
@@ -189,9 +191,14 @@ ftr_align/
                 one axis.  No direction arrow -- fig_support_vi stays in TikZ.
   metrics.py    row_labels, gap_summary (one flat record per (model pair,
                 direction) cell), constraint_table (per-constraint detail),
-                support_summary (one-model counterpart of gap_summary),
-                block_table (ONE per-block table, `(model, d, target=None)`;
-                target optional -- see below).  Paper-shaped tables are NOT here -- Tables II & III
+                summary (one model at one direction; target optional),
+                block_table.  All four share ONE signature shape
+                `(model, d, target=None)`: no target -> the support attribution
+                (`value`), with one -> the misalignment attribution (`loss`).
+                `target` needs only to be CONTAINED in `model`, not to be the
+                meet.  `gap_summary` is the exception -- a pair-level composer
+                calling `summary` from each side with one shared intersection
+                solve, so `Delta = U - V` is exact.  Paper-shaped tables are NOT here -- Tables II & III
                 and their `net_dual` collapse live in
                 notebooks/reproduce_conference.py
   cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,

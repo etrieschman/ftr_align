@@ -165,8 +165,7 @@ def test_summary_reports_attribution_shape():
     parallel twins are one block of size 2 with a 1-dimensional trade space --
     the smallest case where constraint-level attribution is unidentified."""
     sys = toy.REDUNDANT_MODELS["derate"][1]
-    prob = SupportProblem(sys, _direction(sys))
-    row = summary(g_u, prob.data.direction, labels={"case": "redundant"}, solver=CLEAR)
+    row = summary(sys, _direction(sys), labels={"case": "redundant"}, solver=CLEAR)
 
     assert row["case"] == "redundant"
     assert row["h"] == pytest.approx(32625, abs=2)

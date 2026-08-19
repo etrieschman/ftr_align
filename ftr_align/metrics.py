@@ -108,24 +108,28 @@ def gap_summary(
         V = h(g) - h(f^g)      value g loses on adopting it
         Delta = h(f) - h(g) = U - V
 
-    The pair-level composer, and the only thing that reports both modes at once:
-    it is :func:`summary` called against ``f ^ g`` from each side, suffixed
-    ``_U`` and ``_V``.  ``relative_gap`` is ``Delta / h(g)``."""
+    The pair-level composer, and the only thing reporting both modes at once: it
+    is :func:`summary` called against ``f ^ g`` from each side, suffixed ``_U``
+    and ``_V``, with one shared intersection solve so ``Delta = U - V`` is exact.
+    ``relative_gap`` is ``Delta / h(g)``."""
     m = meet(f, g)
     per = {
         mode: summary(model, direction, m, solver=solver)
         for mode, model in (("U", f), ("V", g))
     }
     h_f, h_g = per["U"]["h"], per["V"]["h"]
-    h_meet = h_f - per["U"]["loss"]
+    # One intersection solve for both modes.  Each `summary` computes its own,
+    # and the two agree only to solver precision -- taking them separately would
+    # leave `Delta = U - V` holding approximately rather than identically.
+    h_meet = SupportProblem(m, direction).solve(solver=CENTER).value
 
     out = {
         **(labels or {}),
         "h_f": h_f,
         "h_g": h_g,
         "h_meet": h_meet,
-        "U": per["U"]["loss"],
-        "V": per["V"]["loss"],
+        "U": h_f - h_meet,
+        "V": h_g - h_meet,
         "Delta": h_f - h_g,
     }
     out["relative_gap"] = None if abs(h_g) < EPS else out["Delta"] / h_g
