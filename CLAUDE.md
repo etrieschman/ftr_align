@@ -192,8 +192,12 @@ ftr_align/
   metrics.py    row_labels, gap_summary (one flat record per (model pair,
                 direction) cell), constraint_table (per-constraint detail),
                 summary (one model at one direction; target optional),
-                block_table.  All four share ONE signature shape
-                `(model, d, target=None)`: no target -> the support attribution
+                block_table.  `constraint_table`'s `difference`
+                column is UNSUFFIXED (`level` / `coverage`): a nested pair has
+                `b_model >= b_target` everywhere, so the `_U`/`_V` names of
+                `differences` cannot distinguish anything there, and which mode a
+                row feeds is which model you passed.  All four share ONE signature
+                shape `(model, d, target=None)`: no target -> the support attribution
                 (`value`), with one -> the misalignment attribution (`loss`).
                 `target` needs only to be CONTAINED in `model`, not to be the
                 meet.  `gap_summary` is the exception -- a pair-level composer
@@ -210,9 +214,15 @@ ftr_align/
   cases/texas5.py  5-node of the attribution memo (fig_texas5): parallel WD
                 pair (non-singleton Lambda*), WN/SH pair (priced, no circulation
                 -> individually identified), SDH triangle (circulation).
-                solve_limit_design(patterns) -> the limits making a chosen
-                binding pattern bind exactly (maximise the margin at every other
-                row; `problem.value > 0` IS the check).
+                solve_limit_design(model, patterns, extra=, bounds=) -> the
+                limits making a chosen binding pattern bind exactly (maximise the
+                margin at every other row; `problem.value > 0` IS the check).
+                Patterns are GLOBAL ROW INDICES, so a pattern may name rows from
+                any contingency and the side is implicit in which half of the
+                stack it sits in.  The pinned set is a cvxpy Parameter, not
+                structure (`_design_problem` compiles once per (model, pattern
+                names, extra, bounds) and caches), so a sweep is a warm parameter
+                update -- ~23x faster than rebuilding, 0.97 ms vs 22.7 ms.
                 **Topology only, no bid data by design** -- every proposition
                 holds at arbitrary `y ⪰ 0`, and only `prop:support` needs a real
                 clearing, which the 3-node oracle already anchors.
@@ -242,7 +252,7 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 (jupytext `# %%`). Planned: `scenarios.py` (`build_dam_instance` = inverse of
 `clear_dam`, a tested roundtrip), `analysis/` (alignment, viz_toy, viz_large).
 
-## Status (2026-08-12): notation aligned to the journal draft, 58 tests pass
+## Status (2026-08-19): notation aligned to the journal draft, 370 tests pass
 
 - Table II (`MS_DAM`, `Δ`, `η`) and Table III (`μ_f`, `μ_g`) reproduced exactly.
 - Robust `μ` bounds + binding/degenerate/slack classification.
@@ -261,11 +271,6 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 - **`shapley_repair` removed.** It answered `prop:repair_nonadditive` with an
   order-averaged additive split; the memos answer it with attribution blocks.
   Two answers to one question, and only one is in the paper.
-- **Known gap, deliberate:** `marginal_repair` repairs `f` toward `g`, not toward
-  `f ∧ g`, so it is *not* the memo's `U^(S)` (whose monotonicity needs the
-  one-signed target). `_repair_blocks` also takes `U` blocks from the `g` support,
-  where `prop:block_underfunding` uses the blocks of `f`. Both reconciled in
-  step 3, not in the rename.
 - **Step 2 primitives (`tests/test_primitives.py`, 27 tests):** `meet(f, g)` in
   `network.py`; `primal_face(problem, weights) -> FaceRange` and `in_span` in
   `duality.py`. `meet` guards Assumption 1 explicitly (`np.allclose(K_f, K_g)`)
@@ -413,6 +418,45 @@ swing by `325.7`), so it is a *test* (`test_toy_blocks`), not a column.
 assumed to be `size − 1`. A zero failure mode yields a *typed* null `loss_frac`
 so the `U` and `V` frames still stack.
 
+### What the texas5 design settled (see LEARNINGS.md for the derivations)
+
+- **`solve_limit_design` has no `trades` argument, and cannot need one.** Pinning
+  every row of a circuit `S` already forces its trade: `Σ zᵢ kᵢ = 0` gives
+  `Σ zᵢ bᵢ = Σ zᵢ (Kq)ᵢ = 0` for free. The constraint would bind only for a
+  circuit *not* inside a pinned pattern, and the designer maximises the margin at
+  every unpinned row, so `J*` **is** the pattern by construction.
+- **Enumerate both sides of every pattern row; never lock one as a gauge.**
+  Flipping every row maps `q → −q`, which the limits do not see — but `extra`
+  pins the sign of `q[W]`, `q[N]`, `q[H]`, so it does. 22 of 112 mirrored pattern
+  pairs give different margins.
+- **Screen each pattern alone before joining.** Infeasible alone ⇒ infeasible
+  jointly, and the screen is linear in the side count where the join is a
+  product. ~91% of span sides die in the screen.
+- **The combined direction is not a designed pattern.** The design pins each
+  pattern at its own optimum for its own direction. `d = Kᵀ(1_A + 1_B)` exposes a
+  face that is neither, where `J*` is neither pattern. Inspect one at a time.
+- **One limit per element across contingencies** (`b[base,e] == b[c,e]`, imposed
+  by the notebook's `extra`) removes the confound: no level difference can hide
+  between two contingencies, so a cross-contingency block is topology, not
+  ratings. It costs realism (real post-contingency ratings are higher) and
+  margin (pinning a base row pins its twin).
+- **`identified = False` is witnessed**, and it is exactly primal multiplicity of
+  the meet: the block share is `const − wᵀq` read at a *target* optimum `q`, so it
+  is a number only when `wᵀq` is constant on the meet's optimal face. Vertices
+  give `True` vacuously; **facet normals** are where it bites. Every failure is in
+  `U` at the normal of a **contingency** row — `f` is base-only, so it cannot
+  price that row and its `w` falls outside `span{1} + row(K_{J*(f∧g)})`.
+  `primal_invariant` and `block_share_range` agree on all 94 blocks.
+- **The floor is a gauge, not a switch.** `loss − floor` is the duality gap of the
+  model's certificate against the target, so `floor_ratio = 1` iff that
+  certificate is *also* optimal for the target. A priced row where the models
+  agree contributes zero to the floor while still contributing to `h(model)`, so
+  a derate uniform over one contingency but not the whole stack lands strictly
+  inside `(0, 1)` — 56 of 60 vertices here.
+- **The regime map replaces the derate search.** `faces(f ∧ g)` plus
+  `gap_summary` at each exposing direction found both modes positive at 58 of 60
+  vertices, with no tuning; the 3-node needed a hand-picked `α`.
+
 ### A finding from step 3: tolerances must scale with the *support values*
 
 Every attribution quantity — `U`, `V`, a repair value, a floor, a block share —
@@ -459,6 +503,10 @@ zero floor, all displaced value).
   toward `f ∧ g`, so monotone) and `block_shares` (which takes `U` from the
   blocks of `f` and `V` from those of `g`, per `prop:block_underfunding` —
   `_repair_blocks` had these the other way round).
+- `solve_limit_design`'s `trades=` — mathematically redundant, see the texas5
+  findings above. It imposed `Σ zᵢ bᵢ = 0`, which pinning the circuit's rows
+  already implies; passing an *unflipped* `z` against flipped rows imposed the
+  wrong sign pattern and made every design infeasible.
 - `embed` — zero library callers once every comparative quantity aligns its
   models first, which puts `μ` on the common index natively. `align` is the
   whole story.
@@ -535,19 +583,17 @@ limit per contingency independently. (`from_limits` was considered and dropped �
 
 ### Next — the misalignment-attribution test backlog (T0–T5, toy first)
 
-Steps 1 (notation), 2 (primitives), 3 (`attribution.py`) and 4 (results tables)
-are **done**. Remaining, in order:
+Steps 1 (notation), 2 (primitives), 3 (`attribution.py`), 4 (results tables),
+6 (the 5-node case + notebook) and 7 (search + viz) are **done**. Remaining:
 
-5. **T1, T2 on the 3-node.** `cor:canonical` items 1/4/5 are exact closed forms —
-   pass/fail, no tolerance judgment. **Stop and read the floor-to-total ratio**:
-   it decides whether the floor is an instrument or a footnote, and how much
-   reporting apparatus is worth carrying to RTS.
-6. **T3/T4 on the 5-node** as queries over one shared grid of `(model pair, d)`
-   cells, so sub/superadditive witnesses are *found* rather than constructed.
-   The case file and notebook are **done** (see the validation below); what
-   remains is the grid and the model pairs, i.e. numerical setup.
-7. **Search + viz — done** (`polytope.py`, `viz.py`). What remains is using
-   them: T5's regime sweep is `faces(model)` plus a groupby, not new code.
+1. **T1, T2 on the 3-node.** `cor:canonical` items 1/4/5 are exact closed forms —
+   pass/fail, no tolerance judgment. Note item 1 now has a sharper reading: the
+   floor is tight iff the model's certificate survives as a certificate for the
+   target, which needs a derate uniform over the **whole stacked system**.
+   The floor-to-total ratio is *not* binary in general — see the texas5 findings.
+2. **Repair sub/superadditivity (PLAN §4)** — the only computational item left on
+   `PLAN.md`. Brute force over disjoint row subsets; the blocks pick the
+   candidates.
 
 Deferred: multi-interval `δ(T)` (Theorem 4 — `dam_instance(interval)` was built
 for it); `build_dam_instance` (the inverse of `clear_dam`) — only needed where a

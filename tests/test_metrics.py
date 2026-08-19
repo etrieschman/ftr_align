@@ -111,7 +111,12 @@ def test_constraint_table_reports_limits_and_difference_kinds():
         <= np.minimum(table["limit"].to_numpy(), table["target_limit"].to_numpy()) + 1e-9
     )
     # every kind the models actually carry is named in the table
-    expected = {k for k, rows in differences(g, meet(f, g)).items() if len(rows)}
+    # the table reports the kind unsuffixed -- see `constraint_table`
+    expected = {
+        k.rsplit("_", 1)[0]
+        for k, rows in differences(g, meet(f, g)).items()
+        if len(rows)
+    }
     assert set(table["difference"].drop_nulls().to_list()) == expected
 
 

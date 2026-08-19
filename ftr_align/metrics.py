@@ -167,8 +167,17 @@ def constraint_table(
         loss  = mu_i [b_i - (K q)_i]    sums to h(model) - h(target)
 
     plus ``target_limit`` and ``difference`` -- whether the row disagrees on a
-    *level* (both finite) or on *coverage* (one unmonitored), and which mode it
-    feeds.
+    *level* (both finite) or on *coverage* (one unmonitored).  Which failure mode
+    a disagreement feeds is which model you passed, not a property of the row, so
+    the kind is reported unsuffixed: a nested pair has ``b_model >= b_target``
+    everywhere, and the ``_U``/``_V`` names of :func:`attribution.differences`
+    cannot distinguish anything here.
+
+    ``priced`` is whether the row is in ``J*(b;y)``, and ``block`` is null exactly
+    where it is not: an unpriced row carries ``mu_i = 0``, contributes nothing to
+    ``h``, and so belongs to no block.  Such rows appear at all only because the
+    models disagree there.  Note ``priced`` is stronger than binding -- a row can
+    be tight at the primal optimum and still carry ``mu_i = 0``.
 
     Neither column is identified row by row where a block has more than one
     member; ``block`` says which rows those are, and :func:`block_table` is the
@@ -188,7 +197,10 @@ def constraint_table(
             solver=solver, want_primal=True
         ).q
         share = row_shares(model, target, sol.mu, q_target)
-        kind = _by_row(differences(model, target).items())
+        kind = _by_row(
+            (name.rsplit("_", 1)[0], rows)
+            for name, rows in differences(model, target).items()
+        )
         keep |= set(kind) | set(np.flatnonzero(np.abs(share) > EPS).tolist())
         for i in keep:
             extra[i] = {
@@ -198,10 +210,11 @@ def constraint_table(
             }
 
     base = model.labels()
-    return pl.DataFrame(
+    out = pl.DataFrame(
         [
             {
                 **(labels or {}),
+                "priced": i in block_of,
                 "block": block_of.get(i),
                 "constraint": i,
                 "contingency": base["contingency"][i],
@@ -215,6 +228,29 @@ def constraint_table(
             for i in sorted(map(int, keep))
         ]
     )
+    # `limit`, `target_limit` and `difference` are one statement and must be read
+    # together, so they sit adjacent: any gap between them is a column a wide
+    # table will truncate right where the comparison happens.
+    order = [
+        c
+        for c in (
+            *(labels or {}),
+            "priced",
+            "block",
+            "constraint",
+            "contingency",
+            "element",
+            "side",
+            "limit",
+            "target_limit",
+            "difference",
+            "mu",
+            "value",
+            "loss",
+        )
+        if c in out.columns
+    ]
+    return out.select(order)
 
 
 def block_table(

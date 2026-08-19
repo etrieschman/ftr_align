@@ -30,17 +30,6 @@ contingencies that's `4^5 × |α|` cells — trivial.
 **Solve.** Pick the disagreement pattern you want, then use `solve_limit_design`
 (generalized, §2) to find limits realizing it.
 
-**Screen first — this is exact and needs no sweep.** Row `i` is redundant iff
-
-```
-max { kᵢᵀq : Kq ≤ b, row i dropped } ≤ bᵢ
-```
-
-One LP per row. A redundant contingency changes `Q(b)` not at all, so it cannot
-produce *any* of the structures below. Drop those candidates before sweeping.
-Cheap alternative: the union of tight sets over `faces(model)` is exactly the
-non-redundant rows — free if you already enumerated faces.
-
 ---
 
 ## 1. Both failure modes live (`U > 0` and `V > 0`)
@@ -62,81 +51,39 @@ bit and `U = 0` in every scenario. Non-binding ⇒ no witness.
 
 ---
 
-## 2. Attribution above constraint level, **spanning contingencies**
+## 2. Attribution above constraint level, **spanning contingencies** — DONE
 
-You are right that I was wrong: with contingencies, rows from *different* cases
-can share a block. The cycle space of `A` governs the base case only; each
-contingency has its own `H_c`, so the object is the stacked system.
-
-The block condition is a statement about the trade matrix `C`, whose columns are
-`cᵢ = [k̄ᵢ ; bᵢ]` — the mean-removed PTDF row stacked on the limit. Rows `S` share
-a block iff some `z` supported on `S` has `C z = 0`, i.e. **both**
+Rows from different contingencies *can* share a block: the cycle space of `A`
+governs the base case only, and the object is the stacked system. The block
+condition is about the trade matrix `C`, columns `cᵢ = [k̄ᵢ ; bᵢ]`:
 
 ```
-(a)  Σ_{i∈S} zᵢ k̄ᵢ = 0      ← PTDF only. b-free. Pure linear algebra.
-(b)  Σ_{i∈S} zᵢ bᵢ = 0      ← LINEAR IN b.
+(a)  Σ_{i∈S} zᵢ k̄ᵢ = 0      ← PTDF only.  b-free.  Screen with it.
+(b)  Σ_{i∈S} zᵢ bᵢ = 0      ← implied whenever every row of S is pinned.
 ```
 
-That split is the whole answer to "can I solve rather than search":
-
-**Search.** Enumerate small row subsets `S` spanning ≥2 contingencies, form
-`C_S`, keep those with `rank(C_S) < |S|`. Cost is a tiny SVD per subset; restrict
-to `|S| ≤ 4` and you are done in seconds. Report whether any surviving `S`
-touches more than one contingency key — that is the question you want answered.
-
-**Solve.** Two clean steps, no search:
-1. Compute `null({k̄ᵢ}_{i∈S})` from the stacked PTDF alone — condition (a),
-   independent of limits. If empty, `S` can *never* be a block; reject before
-   any optimization. This replaces my (wrong) cycle-space claim with the correct
-   stacked version, and it is still free.
-2. For each surviving null vector `z`, add `Σ zᵢ bᵢ = 0` to `solve_limit_design`
-   as **one more linear constraint**. Condition (b) is linear in `b`, so forcing
-   a designated block costs nothing structurally.
-
-### De-hardcoding `solve_limit_design`
-
-It is hard-coded in four ways. Fix them in this order:
-
-1. **Patterns index elements (`for e in range(ell)`), so they cannot name a
-   contingency row.** Change the pattern to carry **global row indices** into the
-   stacked system; sign is then implied by which half of the stack the row is in.
-   This is the change that unlocks everything in this section.
-2. **`b` is one vector over elements.** Make it a vector over *rows* (contingency
-   × element), with an optional tie `b[c,e] == b[base,e]` when you want shared
-   limits. Real FTR/DAM pairs differ by post-contingency rating anyway.
-3. **`b[WD1] == 100`, `b[WD2] == b[WD1]` are baked in.** Take an `extra` callable
-   `(b, q) -> list[constraint]` so case-specific ties live at the call site.
-4. **`q[W] ≥ 0, q[N] ≥ 0, q[H] ≤ 0`, box ±1000 are baked in.** Same treatment —
-   they are an economic story about *this* network, not part of the method.
-
-After (1)–(4) the function is network-agnostic and takes a `NetworkModel`, which
-already owns the stacked `K` and the contingency list.
+Built and validated in `notebooks/explore_texas5.py`: circuit enumeration finds
+the candidates, `solve_limit_design` realizes them, and the headline is a size-3
+block carrying both a `base:` row and a post-outage row. See `LEARNINGS.md` for
+why (b) never needs imposing.
 
 ---
 
-## 3. Floor is partial (`0 < floor_ratio < 1`)
+## 3. Floor is partial (`0 < floor_ratio < 1`) — ANSWERED
 
-You said you have no idea how to test this. It is the easiest one on the list —
-the floor is binary today for a structural reason you can invert.
+Not binary, and it did not need the constructed same-mode case. Across the 60
+meet vertices of the texas5 design, `floor_ratio_V` lands strictly inside
+`(0.396, 1)` at 56 of them.
 
-`floor_U = Σ μᵢ (bᵢ − (f∧g)ᵢ)` is supported only where the models disagree **and**
-the row is priced. An unmonitored row forces `μᵢ = 0`, so a coverage difference
-contributes exactly 0. Hence:
+The old structural argument was incomplete. `floor_U = Σ μᵢ (bᵢ − (f∧g)ᵢ)` is
+supported where the models disagree *and* the row is priced — so the ratio is 1
+only when **every priced row** carries the disagreement. Here `V`'s certificate
+also prices post-outage rows, where `g` and `f∧g` agree, and those contribute
+nothing to the floor while contributing to `V`. A derate uniform over the base
+rows is still non-uniform over the *stack*.
 
-- pure level difference → floor = whole mode → ratio **1.0**
-- pure coverage difference → floor = 0 → ratio **0.0**
-
-Today `mixed` has level→V and coverage→U — *different* modes, so each ratio is
-still 0 or 1.
-
-**Solve.** Put a level difference **and** a coverage difference into the **same**
-mode. Concretely: `g` enforces contingency `c` that `f` does not (coverage→U),
-**and** `f` is looser than `g` on some shared, binding row (level→U). Then
-`0 < floor_U < U` by construction. No search at all.
-
-**Search.** If you would rather confirm than construct: scan pairs for
-`len(differences(f,g)["level_U"]) > 0 and len(...["coverage_U"]) > 0`, then read
-`floor_ratio_U` from `gap_summary`.
+So `cor:canonical` item 1 (floor exactly tight) needs uniformity over the whole
+stacked system, not over one contingency. That is the sentence for the paper.
 
 ---
 
@@ -162,19 +109,23 @@ enumerating blindly.
 
 ---
 
-## 5. Primal invariance has content (`identified = False`)
+## 5. Primal invariance has content (`identified = False`) — WITNESSED
 
-Lower priority per you, but note it is currently **unwitnessed anywhere** — every
-block reports `True`, because every intersection optimum has been a vertex, where
-`prop:primal_invariance` holds *vacuously*.
+20 of 94 probed blocks report `identified = False`, all in **U**, all at the
+normal of a **contingency** row. `faces(meet)` vertices give `True` vacuously, as
+predicted; the facet normals are where the condition bites, because they expose a
+whole facet rather than a vertex.
 
-**Solve** (no search needed). The condition has content only when `Q(f∧g)`'s
-optimal face has positive dimension. Force that: take `d` = a single row's normal
-of the meet. Then `d` is parallel to that facet and the optimal face is the whole
-facet, not a vertex. `faces()` already hands you facet normals.
+Mechanism: `f` is base-only, so at `d = kᵢ` for an outage row it cannot price
+that row and its block weight `Σ μᵢ kᵢ` falls outside `span{1} + row(K_{J*(f∧g)})`.
+`V` never fails, since `g` contains the row.
 
-**Search.** Sweep `d` over the exposing directions from `faces(meet)` plus the
-facet normals, and record where `identified` goes False.
+Cross-validated: the span test and the two-LP width agree on all 94 blocks —
+identified widths ≤ `6.7e-4`, unidentified ≥ `48.1`.
+
+What remains is editorial, not computational: decide what a `False` means for the
+paper's claim, given the witness is structural (one model blind to a whole
+contingency) rather than a knife-edge.
 
 ---
 
@@ -196,15 +147,8 @@ boundary edges are not images of constraints).
 
 ## Build order
 
-1. **Redundancy screen** (§0) — exact, no sweep, shrinks everything downstream.
-2. **De-hardcode `solve_limit_design`** (§2, steps 1–4) — unlocks §1, §2, §3.
-3. **Cross-contingency block predictor** (§2 solve, step 1) — the b-free null
-   space test. Answers your actual question: *are* cross-contingency blocks
-   possible on this network?
-4. **Same-mode level+coverage pair** (§3) — one constructed case, kills the
-   binary-floor gap.
-5. **Repair non-additivity sweep** (§4) — brute force, cheap.
-6. **Slice plotting** (§viz 3) and **primal invariance** (§5) last.
-
-Items 1–3 are the ones that change what you can ask. 4–5 are results you can
-harvest immediately once 2 lands.
+1. **Repair non-additivity sweep** (§4) — the only computational item left.
+   Brute force, cheap, and §2's blocks pick the candidates.
+2. **Write up §3 and §5** — both are answered; what remains is deciding how they
+   land in the paper.
+3. **Slice plotting** (§viz 3) last.
