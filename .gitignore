@@ -21,4 +21,12 @@ env/
 
 # Fetched datasets (pinned + reproducible via cases/rts_gmlc.py MANIFEST)
 ftr_align/cases/data/
+ercot_data/
 notebooks/figures/
+
+# Certificates and keys
+*.key
+*.crt
+
+# Environment variables. See .env.example for whats needed
+.env

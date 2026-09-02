@@ -16,6 +16,9 @@ dependencies = [
     "highspy",
     "tqdm",
     "plotly",
+    "requests>=2.34.2",
+    "zeep[xmlsec]>=4.3.3",
+    "lxml>=6.1.3",
 ]
 
 [project.optional-dependencies]
