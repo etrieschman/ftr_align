@@ -68,7 +68,7 @@ def extra(model, b, q):
         q <= 1_000,
     ]
     const += [
-        b[model.rows_upper(None)] == b[model.rows_upper(c)]
+        b[model.rows_upper(c)] == 1.1 * b[model.rows_upper(None)]
         for c in model.keys
         if c is not None
     ]
@@ -109,15 +109,39 @@ def sides(model, rows):
 
 
 def direction_of(model, rows):
-    """``d = K^T y`` for the certificate putting unit weight on ``rows``.
+    """``v = K^T y`` for the certificate putting unit weight on ``rows``.
 
     The inverse of :func:`solve_limit_design`: positing a binding pattern is
-    positing ``y``, which is why this case carries no bid data.  ``d`` lives in
+    positing ``y``, which is why this case carries no bid data.  ``v`` lives in
     NODE space, so any model on this network can consume it -- no alignment.
     """
     y = np.zeros(model.n_rows)
     y[list(rows)] = 1.0
     return model.K.T @ y
+
+
+def in_base_cone(model, rows):
+    """Can a base-only ``f`` rebuild ``v`` from the pattern's BASE rows alone,
+    with NONNEGATIVE weights?  If so the contingency rows bind, price, and cut
+    nothing off ``Q(f)``: ``U = 0`` however well the block is realized.
+
+    By Farkas this IS the condition, not a proxy.  ``U > 0`` needs a ``dq`` with
+    ``k_i^T dq <= 0`` on the tight base rows and ``v^T dq > 0``, and no such ``dq``
+    exists exactly when ``v`` lies in their cone.
+
+    Solve ``v = K_b^T w + t * 1`` and read the signs.  A proper subset of a
+    circuit is independent, so ``w`` is UNIQUE where it exists -- least squares
+    finds it and no LP is needed.  Both halves matter: no solution means ``v``
+    leaves ``span(S_b)`` (the usual case with two contingency rows), while a
+    solution with a negative weight is spanned but still out of the cone -- 173
+    of 1683 designs here, which is why a span test alone is not the answer.
+    """
+    base = set(model.rows_upper(None).tolist()) | set(model.rows_lower(None).tolist())
+    K_b = model.K[[r for r in rows if r in base]]
+    v = model.K[list(rows)].sum(axis=0)
+    M = np.vstack([K_b, np.ones(model.K.shape[1])]).T  # columns: base rows, then 1
+    coef, *_ = np.linalg.lstsq(M, v, rcond=None)
+    return bool(np.allclose(M @ coef, v, atol=1e-8) and (coef[:-1] >= -1e-8).all())
 
 
 # %%
@@ -206,30 +230,7 @@ for name, rows in PATTERNS.items():
     problem_p = SupportProblem(model, direction_of(model, rows))
     solved[name] = (problem_p, problem_p.solve(solver=CENTER))
 
-# Did the construction work?  The designed limits should make the requested rows
-# bind and nothing else.
-display(
-    pl.DataFrame(
-        [
-            {
-                "pattern": name,
-                "h": sol.value,
-                "requested": len(PATTERNS[name]),
-                "bound": int(sol.binding.sum()),
-                "exact": set(PATTERNS[name])
-                == set(np.flatnonzero(sol.binding).tolist()),
-                "rows": row_labels(model, np.flatnonzero(sol.binding)),
-            }
-            for name, (_, sol) in solved.items()
-        ]
-    ).with_columns(pl.col("h").round(2))
-)
-
-
-# %%
-# -------------------------------------
 # PER-PATTERN DETAIL
-# -------------------------------------
 for name, (problem_p, _) in solved.items():
     print(f"\n~~~~~~ Pattern {name}:")
     display(pl.DataFrame(summary(model, problem_p.data.direction)))
@@ -246,11 +247,11 @@ MAX_CIRCUIT = 5  # kbar rows span 4 dimensions, so circuits run to 5
 
 
 def circuits_for(model, outage, base_up, sizes=(2, 3)):
-    """Minimal dependent sets among usable upper rows, with their null vector.
+    """Minimal dependent sets among usable upper rows, with their redistribution ``d``.
 
-    Minimal means ``rank(kbar_S) == |S| - 1`` with a null vector of FULL support;
+    Minimal means ``rank(kbar_S) == |S| - 1`` with a redistribution ``d`` of FULL support;
     a zero entry means a smaller dependent set is hiding inside.  The SIGNS of
-    ``z`` are not a filter -- flipping a row to its lower side flips that entry,
+    ``d`` are not a filter -- flipping a row to its lower side flips that entry,
     so every full-support circuit is usable under some assignment, and
     :func:`sides` is what picks one.
 
@@ -322,7 +323,8 @@ display(rank)
 # -------------------------------------
 # One `b`, two designed patterns: a spanning circuit (the cross-contingency
 # block) and a base-only circuit (the contrast).
-TRUNC = 50
+MAX_CIRCUIT = 4
+MIN_BASE_SIZE = 3
 designs = []
 for outage, outage_name in rank.select("outage", "outage_name").iter_rows():
     print(f"\n~~~~~~ outage {outage_name}")
@@ -334,10 +336,16 @@ for outage, outage_name in rank.select("outage", "outage_name").iter_rows():
         ],
     )
     base_up = {int(i) for i in outage_model.rows_upper(None)}
-    found = circuits_for(outage_model, outage, base_up)
+    found = circuits_for(outage_model, outage, base_up, sizes=range(2, MAX_CIRCUIT + 1))
     span = sorted([f for f in found if f["spans"]], key=lambda f: f["size"])
     base = sorted(
-        [f for f in found if not f["spans"] and set(f["rows"]) <= base_up],
+        [
+            f
+            for f in found
+            if not f["spans"]
+            and set(f["rows"]) <= base_up
+            and f["size"] >= MIN_BASE_SIZE
+        ],
         key=lambda f: f["size"],
     )
 
@@ -345,11 +353,13 @@ for outage, outage_name in rank.select("outage", "outage_name").iter_rows():
     # and the screen is linear where the join is a product.
     span_ok, base_ok = [], []
     for name, candidates, keep in (
-        ("span_block", span[:TRUNC], span_ok),
+        ("span_block", span, span_ok),
         ("base_block", base, base_ok),
     ):
         for S in candidates:
             for side in sides(outage_model, S["rows"]):
+                if name == "span_block" and in_base_cone(outage_model, side):
+                    continue  # priced but worth nothing to U
                 problem, _, _ = solve_limit_design(
                     outage_model, {name: side}, extra=extra
                 )
@@ -388,13 +398,17 @@ display(
                 "margin": d["margin"],
                 "span_size": d["span"]["size"],
                 "base_size": d["base"]["size"],
+                "in_cone": d["in_cone"],
                 "span_pattern": row_labels(d["model"], d["patterns"]["span_block"]),
                 "base_pattern": row_labels(d["model"], d["patterns"]["base_block"]),
             }
             for d in designs
         ]
-    ).sort(["span_size", "base_size", "margin"], descending=True)
+    )
+    .sort(["span_size", "base_size", "margin"], descending=True)
+    .head(10)
 )
+
 
 # Biggest spanning circuit first -- that is the headline block; margin breaks ties.
 design = max(designs, key=lambda d: (d["base"]["size"], d["margin"]))
@@ -403,12 +417,10 @@ print("outage:", net.element_names[design["outage"]], " margin:", design["margin
 for name, rows in design["patterns"].items():
     print(f"  {name:11}: {row_labels(design_model, rows)}")
 display(
-    pl.DataFrame(
-        {
-            "element": net.element_names,
-            "b": design["b"][list(design_model.rows_upper(None))].round(2),
-        }
-    )
+    design_model.labels()
+    .with_columns(pl.Series(design["b"]).round(2).alias("b"))
+    .filter(pl.col("side") == "upper")
+    .select("constraint", "contingency", "element", "b")
 )
 
 
@@ -423,12 +435,13 @@ display(
 # V is a pure level difference (g is looser on every base row).
 #
 # Inspect ONE DESIGNED PATTERN {span, base} AT A TIME.
-ALPHA = 0.85
-b_design = design["b"][list(design_model.rows_upper(None))]
+ALPHA = 0.9
+b_base = design["b"][list(design_model.rows_upper(None))]
+b_cont = design["b"][list(design_model.rows_upper(design["outage"]))]
 
-f_model = NetworkModel.build(net, [Contingency(None, ALPHA * b_design)])
+f_model = NetworkModel.build(net, [Contingency(None, ALPHA * b_base)])
 g_model = NetworkModel.build(
-    net, [Contingency(None, b_design), Contingency(design["outage"], b_design)]
+    net, [Contingency(None, b_base), Contingency(design["outage"], b_cont)]
 )
 m_model = meet(f_model, g_model)
 # The pattern's row indices are `design_model`'s, so they transfer to g only
@@ -454,13 +467,6 @@ def report(d, title):
                 )
             ).drop("rows")
         )
-    # Both sides.  `coverage` can only show on the U side: the meet inherits g's
-    # contingency limits untouched, so g and the meet never differ on coverage.
-    #
-    # A coverage row carries b = +inf, hence mu = 0 and zero loss BY
-    # CONSTRUCTION -- the model does not enforce it at all, so it can never be
-    # priced and can never carry a share.  It survives the noise filter on its
-    # name, not on its magnitude; filtering by magnitude alone hides every one.
     keep = (
         pl.col("priced")
         | (pl.col("difference") == "coverage")
@@ -478,6 +484,7 @@ def report(d, title):
 # Three candidate directions.  Each designed pattern on its own, and their union
 span_rows = list(design["patterns"]["span_block"])
 base_rows = list(design["patterns"]["base_block"])
+
 CANDIDATES = {
     "span_block": span_rows,
     "base_block": base_rows,
@@ -508,8 +515,8 @@ overview = pl.DataFrame(overview)
 display(overview.drop("rows"))
 display(overview.select("pattern", "rows"))
 
-for name in overview.filter(pl.col("both_modes"))["pattern"]:
-    report(direction_of(g_model, CANDIDATES[name]), name)
+for name, rows in CANDIDATES.items():
+    report(direction_of(g_model, rows), name)
 
 
 # %%
@@ -581,32 +588,6 @@ for mode in ("U", "V"):
         .agg(pl.len(), pl.col(mode).mean().alias(f"mean_{mode}"))
         .sort(f"dim_trade_space_{mode}", f"n_priced_{mode}", descending=True)
     )
-
-# Floors, per mode.  A uniform derate makes the floor exactly tight (ratio 1) and
-# a coverage difference gives it nothing (ratio 0).  Neither is the general case:
-# the derate here is uniform over the BASE rows but the certificate also prices
-# outage rows, where the models agree and the floor collects nothing -- so the
-# ratio lands strictly inside.  Bucket it rather than grouping raw floats.
-display(
-    sweep.select("floor_ratio_U", "floor_ratio_V")
-    .unpivot(variable_name="mode", value_name="ratio")
-    .with_columns(
-        bucket=pl.when(pl.col("ratio").is_null())
-        .then(pl.lit("no mode"))
-        .when(pl.col("ratio").abs() < 1e-9)
-        .then(pl.lit("0 (all displaced)"))
-        .when((pl.col("ratio") - 1).abs() < 1e-9)
-        .then(pl.lit("1 (floor tight)"))
-        .otherwise(pl.lit("strictly between"))
-    )
-    .group_by("mode", "bucket")
-    .agg(
-        pl.len(),
-        pl.col("ratio").min().alias("min"),
-        pl.col("ratio").max().alias("max"),
-    )
-    .sort("mode", "bucket")
-)
 
 
 # %%

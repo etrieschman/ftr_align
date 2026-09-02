@@ -37,7 +37,7 @@ times over, without introducing any new geometry.
 **(c) Minimal dependent sets have at most `n` rows.** Any `n` vectors in an
 `(n − 1)`-dimensional space are dependent, so a circuit never exceeds `n` rows.
 
-**(d) Circuit size determines the face it exposes.** If exactly the rows of a
+**(v) Circuit size determines the face it exposes.** If exactly the rows of a
 circuit `S` are tight, the optimal face is `{q : k̄ᵢᵀq = bᵢ, i ∈ S}`, of dimension
 
 ```
@@ -50,19 +50,19 @@ move**, which is what §4 needs.
 
 **The slack bus is a labelling convention.** PTDF rows under two slack
 conventions differ by a multiple of `1ᵀ`, which annihilates balanced injections.
-Changing it shifts `d` by a constant vector and leaves `Q(b)`, `h` and `μ`
+Changing it shifts `v` by a constant vector and leaves `Q(b)`, `h` and `μ`
 untouched. Choosing the slack to suit a figure's axes is free.
 
 ---
 
 ## 2. When attribution rises above a single constraint
 
-**The block condition.** Rows `S` share an attribution block iff some `z`
+**The block condition.** Rows `S` share an attribution block iff some `d`
 supported on `S` satisfies **both**
 
 ```
-(a)  Σ_{i∈S} zᵢ k̄ᵢ = 0        the trade moves no flow
-(b)  Σ_{i∈S} zᵢ bᵢ = 0        and costs no value
+(a)  Σ_{i∈S} dᵢ k̄ᵢ = 0        the trade moves no flow
+(b)  Σ_{i∈S} dᵢ bᵢ = 0        and costs no value
 ```
 
 **(a) is limit-free.** It is pure linear algebra on the stacked PTDF, so it can
@@ -74,14 +74,14 @@ block, at any `b`. This is the cheap screen, and it is what makes "which sets
 tight at the optimum `q`, then
 
 ```
-Σ zᵢ bᵢ = Σ zᵢ (Kq)ᵢ = (Σ zᵢ kᵢ)ᵀ q = 0
+Σ dᵢ bᵢ = Σ dᵢ (Kq)ᵢ = (Σ dᵢ kᵢ)ᵀ q = 0
 ```
 
 by (a). So **a circuit that binds is a block** — condition (b) is a consequence,
 not an extra requirement. Nothing needs to be imposed on the limits.
 
 **A nondegenerate vertex has only singleton blocks.** There `J*` holds `n − 1`
-independent rows, so `Σ zᵢ k̄ᵢ = 0` forces `z = 0`. Non-trivial attribution
+independent rows, so `Σ dᵢ k̄ᵢ = 0` forces `d = 0`. Non-trivial attribution
 structure lives on faces, not corners.
 
 **Block count is not ambiguity; corank is.** Blocks *partition* the priced rows,
@@ -96,9 +96,102 @@ below `|B| − 1`. The identity that does hold is that per-block coranks sum to
 blocks. That is the check worth running.
 
 **A uniform derate preserves block structure; a selective one destroys it.**
-Scaling every limit by `α` leaves (b) satisfied: `Σ zᵢ(α bᵢ) = α · 0 = 0`.
+Scaling every limit by `α` leaves (b) satisfied: `Σ dᵢ(α bᵢ) = α · 0 = 0`.
 Derating only some rows of a circuit breaks exactly the block it was built to
 make.
+
+**A binding cross-contingency block need not be a funded one.** Take `f` base-only
+and `g` = base + one outage, and let a circuit `S` bind, split into base rows
+`S_b` and contingency rows `S_c` that `f` cannot price at all. Underfunding is a
+difference of *support values*, not of binding counts, and
+
+```
+U = h(f;y) − h(g;y) = 0   ⟺   v ∈ cone{kᵢ : i ∈ S_b} + span{1}
+```
+
+**This is Farkas, so it is the criterion and not a proxy.** The design makes `S`
+the only tight set, so at `q` the model `f` improves iff some `Δq` satisfies
+
+```
+kᵢᵀ Δq ≤ 0   for i ∈ S_b        stay feasible
+vᵀ Δq > 0                        strictly improve
+```
+
+and Farkas says no such `Δq` exists exactly when `v ∈ cone(S_b) + span{1}` — the
+cone, not the span, because `f`'s multipliers must be non-negative. The value
+then matches by (b): the weights `w` are a dual-feasible certificate for `f`, and
+`Σ wᵢ bᵢ = Σ_S bᵢ` is precisely what (b) asserts.
+
+So a contingency row can be tight, priced with `μᵢ > 0`, and still cut nothing
+off `Q(f)`: condition (b) places its hyperplane exactly through the corner the
+base rows already form. **The relation that makes the rows one block is the same
+relation that can make the contingency rows redundant.**
+
+**The weights are unique, so the test needs no LP.** A *proper subset* of a
+circuit is independent, so `K_{S_b}` has full rank and the `w` solving
+`v = K_{S_b}ᵀ w + t·1` is unique wherever it exists. Least squares finds it;
+the test is then the residual and the signs. Two failures, and **both carry
+content**:
+
+- **no solution** — `v` leaves `span(S_b)`. Vacuous when `|S_c| = 1`, since any
+  `|S| − 1` rows of a circuit span it; the usual outcome when `|S_c| ≥ 2`, which
+  is why the contingency-row count is such a strong empirical proxy (976 of 1009).
+- **a solution with a negative weight** — spanned, but still outside the cone.
+
+**So a span test is not the criterion.** It sees the first failure and is blind
+to the second, and it errs in the dangerous direction: it calls a *live* design
+dead. On the 5-node it is wrong on **173 of 1683** realizable designs, 165 of
+them with a single contingency row — exactly the regime where spanning is
+automatic and only the signs carry information. Span is a statement about row
+spaces and does not involve `v`; the cone is where the direction re-enters.
+Checked against the cone LP on all 1683: no disagreements.
+
+**The smallest such block is an LODF triple, and it is always in the cone.**
+`{base:o, base:e, c_o:e}` is dependent because its `d` **is** the outage-transfer
+identity
+
+```
+k_e^{c_o} = k_e + L(e,o) · k_o
+```
+
+Take the three rows on sides `s_o, s_e, s_c ∈ {±1}`. The base rows `f` can price
+are `s_o k_o` and `s_e k_e`, and the recombination weights come out in closed
+form:
+
+```
+w_e = 1 + s_c·s_e   ∈ {0, 2}          always ≥ 0
+w_o = 1 + s_c·s_o·L                    ≥ 0  ⟺  |L| ≤ 1
+```
+
+So the cone test collapses to **`|L| ≤ 1`, independent of the sides** — the
+`w_e` branch can never fail, and the sign choice only picks which of `1 ± L` the
+other weight is. `|L| ≥ 1` means the outage more than fully reverses the flow, a
+near-radial situation excluded with the bridges, so **every LODF triple carries
+`U = 0`, on any side assignment** — the outage row is priced and worth nothing.
+Verified on the 5-node across all 70 genuine triples × 8 side assignments, zero
+failures, `|L| ∈ [0.043, 0.769]`, giving `min w_o = 1 − max|L| = 0.23`. (The
+parallel pair `WD1`/`WD2` is excluded: `k_o` and `k_e` are collinear there, so it
+is rank 1, not a circuit of three independent directions.)
+
+**So escaping the cone is a statement about topology, not sides.** A spanning
+circuit escapes only by *not* being an LODF triple — by not containing the
+outaged element's own base row, so that the contingency row is tied to base rows
+other than `o`. That is necessary but not sufficient: of the 133 realizable
+non-LODF size-3 spanning designs, 75 escape and 58 do not, while all 116 LODF
+ones stay in. Which is why the cone LP is run rather than pattern-matched.
+
+**Block size is not a usable proxy for the test.** Over 1683 realizable
+spanning-circuit designs on the 5-node the cone test partitioned `U` exactly —
+1141 out-of-cone every one with `U > 0`, 542 in-cone every one with `U = 0`, no
+disagreements. Restricting to `|S| ≥ 4` still leaves 368 of 1434 in the cone;
+`|S_c| ≥ 2` is the better structural proxy (976 of 1009) but is also not exact.
+The test itself is one small LP, cheaper than the design LP it screens.
+
+**And it does not need the block broken.** Detuning the contingency limit off its
+designed value restores `U`, but only by destroying the circuit — the row above
+about selective derates. Out-of-cone designs need no such thing: they realize
+`J*` equal to the pattern, as a single size-3 cross-contingency block with
+`dim ker C = 1`, *and* `U > 0` at the same limits.
 
 ---
 
@@ -109,7 +202,7 @@ certificate against the target.** So the floor is tight exactly when that
 certificate is still optimal for the target, and slack by however much it is not.
 
 **Why the floor bounds the mode.** With `μ` the model's certificate,
-`h(model) = bᵀμ` by strong duality. The target shares `K` and `d`, so `μ` is
+`h(model) = bᵀμ` by strong duality. The target shares `K` and `v`, so `μ` is
 dual-*feasible* for it, and weak duality gives `h(target) ≤ b_targetᵀμ`.
 Subtracting,
 
@@ -183,8 +276,8 @@ Only `wᵀq` depends on the choice.
 
 **(iii) So the question is whether `wᵀq` is constant on the target's optimal
 face.** A unique maximiser forces `q`, and the share is a number — `identified`
-holds, but *vacuously*. On a face of positive dimension you can move by any `v`
-with `1ᵀv = 0` and `K_{J*(f∧g)} v = 0`, and the share is invariant to all of them
+holds, but *vacuously*. On a face of positive dimension you can move by any `Δq`
+with `1ᵀΔq = 0` and `K_{J*(f∧g)} Δq = 0`, and the share is invariant to all of them
 exactly when
 
 ```
@@ -194,14 +287,14 @@ w ∈ span{1} + row(K_{J*(f∧g)})
 `False` means the share is genuinely a **different number at different optima**.
 It is an interval, not a value.
 
-**(iv) Where it fails, and why that is structural.** Point `d` along a single
-row's normal, `d = kᵢ`. The maximiser set is then the whole facet, and
+**(iv) Where it fails, and why that is structural.** Point `v` along a single
+row's normal, `v = kᵢ`. The maximiser set is then the whole facet, and
 `J*(f ∧ g)` is essentially `{i}`, so the test subspace is only `span{1, kᵢ}` —
 two dimensions inside `Rⁿ`.
 
 Now the asymmetry between the modes, which is the interesting part:
 
-- **V** (`model = g`): `g` enforces row `i`, so at `d = kᵢ` its certificate
+- **V** (`model = g`): `g` enforces row `i`, so at `v = kᵢ` its certificate
   concentrates there, `w ∝ kᵢ`, and the test passes.
 - **U** (`model = f`): `f` is base-only and does not have row `i` at all. Its
   certificate lands on whichever *base* rows bind, so `w` is a combination of
@@ -237,12 +330,82 @@ is *nearly every regime*, with no tuning at all. That is worth stating, because
 on a small network without contingencies both modes coexist only at a
 hand-picked derate and in one scenario.
 
+**Why both modes appear at nearly every vertex.** Let `q*` be a vertex of
+`Q(f ∧ g)` and `v` a direction interior to its normal cone, so `h(f∧g;v) = vᵀq*`.
+Then
+
+```
+U = h(f;v) − vᵀq* = 0   ⟺   q* maximizes v over Q(f)   ⟺   v ∈ N_f(q*)
+V = h(g;v) − vᵀq* = 0   ⟺   q* maximizes v over Q(g)   ⟺   v ∈ N_g(q*)
+```
+
+because `Q(f∧g) ⊆ Q(f)` makes `vᵀq* ≤ h(f;v)` always, with equality exactly when
+`q*` is already `f`-optimal. For polyhedra the normal cone of an intersection is
+the Minkowski sum of the normal cones,
+
+```
+N_{f∧g}(q*) = N_f(q*) + N_g(q*)
+```
+
+so the two statements compose into one:
+
+> **Both failure modes are strictly positive exactly when
+> `v ∈ (N_f(q*) + N_g(q*)) \ (N_f(q*) ∪ N_g(q*))`** — the exposing direction needs
+> generators from *both* models and lies in neither cone alone.
+
+**This is why it is generic rather than tuned.** The sum of two cones fills the
+entire wedge between them while the union is only the two cones, so whenever both
+cones are proper the sum is strictly larger and most of it lies outside both. And
+`faces` builds `v = Σ_{i tight} kᵢ`, a positive combination of *every* tight row,
+which takes generators from both models by construction and therefore lands
+between them by construction.
+
+**The only way to fail is a vertex inherited whole from one parent.** If one
+model has no binding row at `q*` its normal cone is trivial, `N_{f∧g}(q*)` reduces
+to the other model's, `v` lies inside it, and that model's mode is exactly zero
+while the other stays positive. So a vertex fails to carry both modes iff its
+tight set is single-model — a classification, not a statistic, and the reading to
+check a sweep against.
+
+**At a vertex of `Q(f)` the sign of `U` is a feasibility test, not an
+optimization.** Take `q*` a vertex of `Q(f)` and `v` interior to `N_f(q*)`, so `q*`
+is the *unique* `f`-maximizer and `h(f;v) = vᵀq*`. Then
+
+> **`U > 0`  ⟺  `q* ∉ Q(g)`.**
+
+Both directions are immediate. If `q* ∈ Q(g)` then `q* ∈ Q(f∧g)`, so
+`vᵀq* ≤ h(f∧g;v) ≤ h(f;v) = vᵀq*` and `U = 0`. If `q* ∉ Q(g)` then the `f∧g`
+maximiser is some `q ≠ q*` in `Q(f)`, and uniqueness of `q*` gives `vᵀq < vᵀq*`,
+so `U > 0` strictly. Uniqueness is what makes the second case strict, which is
+why `v` must be *interior* to the cone — the direction `faces` returns.
+
+Three consequences.
+
+- **The sign of `U` costs a matrix-vector product**, `K_g q* ⪯ b_g`, instead of
+  three support solves. The *magnitude* still needs one solve on the meet.
+- **The `U > 0` region of direction space is characterised, not searched**: it is
+  the union of the normal cones of the `g`-infeasible vertices of `Q(f)`. Every
+  such direction arises this way, since a `v` whose `f`-optimal face lies wholly
+  inside `Q(g)` gives `U = 0`.
+- **Globally, `U > 0` for some direction iff `Q(f) ⊄ Q(g)`** — a polytope is the
+  hull of its vertices, so if `Q(g)` cuts anything off `Q(f)` it cuts off a
+  vertex.
+
+The symmetric statements hold for `V` at the vertices of `Q(g)`.
+
+**Open direction.** The feasibility reading suggests limits could be designed to
+target `U > 0` directly, rather than positing a binding pattern and checking
+afterwards. Not worked out here.
+
 **Scale.** By the Upper Bound Theorem a polytope of dimension `n − 1` with `m`
 facets has on the order of `m^⌊(n−1)/2⌋` vertices. **Contingencies are survivable;
 buses are not** — adding contingencies grows `m` linearly, while adding buses
 grows the exponent. Past a small `n` the *answer* is too large, not the
 computation, and the well-posed question becomes a sample of realized directions
-rather than an enumeration.
+rather than an enumeration. Enumeration's role is **completeness at small `n`**:
+it establishes that both modes coexist across essentially the whole regime space
+without tuning, which licenses the sampling design used where enumeration is
+impossible.
 
 ---
 
@@ -267,5 +430,5 @@ higher — and margin, since pinning a base row now pins its twin.
 
 **A designed pattern is a claim about one direction only.** The design pins each
 pattern at its own optimum for its own direction. The union of two patterns is
-not itself a designed pattern: `d = Kᵀ(1_A + 1_B)` exposes a third face where
+not itself a designed pattern: `v = Kᵀ(1_A + 1_B)` exposes a third face where
 `J*` is neither, and structure built for `A` is simply absent there.

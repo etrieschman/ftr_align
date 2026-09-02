@@ -56,7 +56,7 @@ print(f"PTDF (line x node):\n{net.ptdf()}")
 # SWEEP: one row per (case, scenario)
 # -------------------------------------
 runs = []
-for case, (f_model, g_model) in toy.MODELS.items():
+for case, (f_model, g_model) in toy.REDUNDANT_MODELS.items():
     for scenario_name, scenario in toy.SCENARIOS.items():
         dam = clear_dam(g_model, scenario, solver=CENTER)
         runs.append(

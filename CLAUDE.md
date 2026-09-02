@@ -18,15 +18,20 @@ rewriting per network.
 | `A` | node-branch incidence | `PhysicalNetwork.A` |
 | `H_c`, `H` | PTDF under `c`; stacked over contingencies | `.ptdf(key)`, `NetworkModel.H` |
 | `K = [H; −H]` | stacked constraint matrix | `NetworkModel.K` |
-| `y`, `d = Kᵀy` | price certificate; node-space direction | `DamResult.y`, `.direction` |
+| `y`, `v = Kᵀy` | price certificate; node-space direction | `DamResult.y`, `.direction` |
 | `Λ(y)`, `Λ*(b;y)` | dual-feasible set, optimal dual face | `Lambda`, `Lambda_star` |
 | `J*(b;y)` | dual-optimal support | `J_star` (one CLARABEL solve) |
 | `D(b;y) = ker C(b;y)` | trade space | `trade_space`, `trade_matrix` |
+| `d` | a redistribution *within* a block (an element of `D`) | the null vector in `circuits_for` |
 | `W_{J_r}` | block total | `block_totals`; column `value` |
 | `U_B` | block's share of a failure mode | column `loss` (**not** `U_B` — see below) |
 | `f ∧ g` | intersection model | `meet` |
 | `U`, `V` | failure modes | `failure_modes` |
 | `U^(S)` | repair value | `repair_value` |
+
+**Letters:** `v` is the direction (`v = Kᵀy`); `d` is a redistribution within an
+attribution block. Code spells both as words (`direction`, the null vector in
+`circuits_for`), so this is a prose convention.
 
 **Naming convention:** capitalized functions (`Lambda`, `Lambda_star`) are
 *assembly* — they return cvxpy constraint lists and never solve; lowercase
@@ -40,19 +45,19 @@ functions solve. Model pairs are always ordered `(f, g)`, matching `Δ(f,g;y)`;
   the line limits enforced under it). `NetworkModel.build(net, contingencies)`
   assembles `K = [H; −H]` and the stacked limit vector `b`. There is **no separate
   `StackedSystem`** — it was folded into `NetworkModel`.
-- **Support is parametrized by a node-space direction `d ∈ Rⁿ`**, not a row-space
-  certificate. `SupportProblem(model, direction)`; `h(b;y) = max_{q∈Q(b)} dᵀq`.
+- **Support is parametrized by a node-space direction `v ∈ Rⁿ`**, not a row-space
+  certificate. `SupportProblem(model, direction)`; `h(b;y) = max_{q∈Q(b)} vᵀq`.
   Every downstream object — `Λ`, `Λ*`, `J*`, blocks, floor, ceiling — depends on
-  `y` **only** through `d = Kᵀy`, so `d` is what the code carries and the memos'
+  `y` **only** through `v = Kᵀy`, so `v` is what the code carries and the memos'
   `(b;y)` notation describes the same thing with the redundant fibre quotiented
-  out. Because `d` lives in node space (shared by every model on the network),
+  out. Because `v` lives in node space (shared by every model on the network),
   support **values and the gap need NO alignment** — each model solves on its own
-  polytope with the same `d`. `clear_dam` returns the DAM certificate `y*` (over
+  polytope with the same `v`. `clear_dam` returns the DAM certificate `y*` (over
   its own rows) **and** `direction = Kᵀ y*`.
-  This survives Assumption 1 breaking: under `K_f ≠ K_g`, `d = K_gᵀy*` is still a
+  This survives Assumption 1 breaking: under `K_f ≠ K_g`, `v = K_gᵀy*` is still a
   node-space vector and both support problems are still well-posed. Passing `y`
   instead would *not* survive — it is meaningless without the model that indexes
-  it. **Do not "carry `y` for later"; `d` is the interface that lasts.**
+  it. **Do not "carry `y` for later"; `v` is the interface that lasts.**
 - **`align` puts two models on a common row index**, rebuilding both onto a union
   contingency set (unenforced contingencies added with `+inf` limits). Used for
   row-level cross-model comparison (lining up `μ_f`/`μ_g`, `differences`, joint
@@ -122,12 +127,12 @@ in your head. A typical session:
 
 ```python
 f, g = toy.MODELS["mixed"]                # an (FTR, DAM) pair
-d = clear_dam(g, scenario).direction      # y*, and d = K^T y*
-summary(g, d)                             # one model: h + attribution shape
-summary(g, d, meet(f, g))                 # + one mode: loss, floor
-gap_summary(f, g, d)                      # both modes: Delta, U, V, floors
-block_table(g, d, meet(f, g))             # per block:      value and loss
-constraint_table(g, d, meet(f, g))        # per constraint: value and loss
+v = clear_dam(g, scenario).direction      # y*, and v = K^T y*
+summary(g, v)                             # one model: h + attribution shape
+summary(g, v, meet(f, g))                 # + one mode: loss, floor
+gap_summary(f, g, v)                      # both modes: Delta, U, V, floors
+block_table(g, v, meet(f, g))             # per block:      value and loss
+constraint_table(g, v, meet(f, g))        # per constraint: value and loss
 ```
 
 ## Layout
