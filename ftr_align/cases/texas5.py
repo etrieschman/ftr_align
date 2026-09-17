@@ -144,8 +144,8 @@ def solve_limit_design(
 def base_pattern_rows(model, pattern) -> set[int]:
     """Global row indices a pattern asks to bind: the upper row for ``+1``, the
     lower for ``-1``."""
-    ell = model.network.n_elements
-    return {e if sign == +1 else ell + e for e, sign in pattern}
+    upper, lower = model.rows_upper(None), model.rows_lower(None)
+    return {int(upper[e] if sign == +1 else lower[e]) for e, sign in pattern}
 
 
 def base_pattern_direction(model, pattern) -> np.ndarray:

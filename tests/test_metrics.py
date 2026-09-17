@@ -9,8 +9,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from ftr_align import SupportProblem, align, clear_dam, meet, constraint_table, gap_summary
-from ftr_align.attribution import differences, row_shares
+from ftr_align import SupportProblem, clear_dam, intersection, constraint_table, gap_summary
+from ftr_align.attribution import row_shares
 from ftr_align.duality import J_star, attribution_blocks, block_totals
 from ftr_align.metrics import block_table, summary
 from ftr_align.cases import toy
@@ -38,21 +38,19 @@ def test_gap_summary_matches_the_underlying_quantities(case):
 
     h_f = SupportProblem(f, d).solve(solver=CLEAR).value
     h_g = SupportProblem(g, d).solve(solver=CLEAR).value
-    h_meet = SupportProblem(meet(f, g), d).solve(solver=CLEAR).value
+    h_int = SupportProblem(intersection(f, g), d).solve(solver=CLEAR).value
 
     assert row["case"] == case
-    # gap_summary solves the *aligned* models (it needs mu on the aligned index
-    # for the floor); the reference solves above use the unaligned ones.  Same
-    # polytope, different LP -- the aligned one carries extra rows pinned to
-    # mu == 0 -- so the interior-point solver lands at a slightly different
-    # point.  Compare at the scale the support values carry, not bit-for-bit.
+    # Independent solves of the same polytopes land at slightly different
+    # interior points.  Compare at the scale the support values carry, not
+    # bit-for-bit.
     scale = max(1.0, abs(h_f), abs(h_g))
     for key, expected in (
-        ("h_f", h_f),
-        ("h_g", h_g),
-        ("h_meet", h_meet),
-        ("U", h_f - h_meet),
-        ("V", h_g - h_meet),
+        ("h_ftr", h_f),
+        ("h_dam", h_g),
+        ("h_int", h_int),
+        ("U", h_f - h_int),
+        ("V", h_g - h_int),
         ("Delta", h_f - h_g),
     ):
         assert row[key] == pytest.approx(expected, abs=1e-6 * scale)
@@ -63,11 +61,7 @@ def test_gap_summary_matches_the_underlying_quantities(case):
     assert row["Delta"] == pytest.approx(row["U"] - row["V"], rel=1e-9)
 
     for mode in ("U", "V"):
-        if row[f"floor_ratio_{mode}"] is not None:
-            assert row[f"floor_ratio_{mode}"] == pytest.approx(
-                row[f"floor_{mode}"] / row[mode], abs=1e-6 * scale
-            )
-        assert row[f"dim_trade_space_{mode}"] >= 0
+        assert row[f"dim_shift_space_{mode}"] >= 0
         assert row[f"max_block_{mode}"] >= 1 or row[f"n_blocks_{mode}"] == 0
 
 
@@ -92,32 +86,10 @@ def test_constraint_table_shares_sum_to_the_failure_mode(case, mode):
     must not drop any that carry value."""
     f, g = toy.MODELS[case]
     d = _direction(g)
-    table = constraint_table(f if mode == "U" else g, d, meet(f, g), solver=CLEAR)
+    table = constraint_table(f if mode == "U" else g, d, intersection(f, g), solver=CLEAR)
     modes = gap_summary(f, g, d, solver=CLEAR)
-    tol = 1e-3 * max(1.0, abs(modes["h_f"]), abs(modes["h_g"]))
+    tol = 1e-3 * max(1.0, abs(modes["h_ftr"]), abs(modes["h_dam"]))
     assert table["loss"].sum() == pytest.approx(modes[mode], abs=tol)
-
-
-def test_constraint_table_reports_limits_and_difference_kinds():
-    _, f, g = find_case(lambda f, g: len(differences(f, g)["level_V"]) > 0
-                        or len(differences(f, g)["coverage_U"]) > 0,
-                        what="a pair whose models disagree")
-    d = _direction(g)
-    table = constraint_table(g, d, meet(f, g), solver=CLEAR)
-
-    # meet is the tighter limit, row by row, as reported
-    assert np.all(
-        table["target_limit"].to_numpy()
-        <= np.minimum(table["limit"].to_numpy(), table["target_limit"].to_numpy()) + 1e-9
-    )
-    # every kind the models actually carry is named in the table
-    # the table reports the kind unsuffixed -- see `constraint_table`
-    expected = {
-        k.rsplit("_", 1)[0]
-        for k, rows in differences(g, meet(f, g)).items()
-        if len(rows)
-    }
-    assert set(table["difference"].drop_nulls().to_list()) == expected
 
 
 def test_block_table_joins_both_attributions(case="mixed"):
@@ -126,12 +98,12 @@ def test_block_table_joins_both_attributions(case="mixed"):
     W still sums to h(model), U_B still sums to the failure mode."""
     f, g = toy.REDUNDANT_MODELS[case]
     d = _direction(g)
-    m = meet(f, g)
+    m = intersection(f, g)
     modes = gap_summary(f, g, d, solver=CLEAR)
     table = block_table(g, d, m)
-    scale = max(1.0, abs(modes["h_g"]))
+    scale = max(1.0, abs(modes["h_dam"]))
 
-    assert table["value"].sum() == pytest.approx(modes["h_g"], abs=1e-6 * scale)
+    assert table["value"].sum() == pytest.approx(modes["h_dam"], abs=1e-6 * scale)
     assert table["loss"].sum() == pytest.approx(modes["V"], abs=1e-6 * scale)
     # and it is exactly the two halves, joined
     assert table["value"].to_list() == pytest.approx(
@@ -159,7 +131,7 @@ def test_block_table_fractions_sum_to_one_for_a_nonzero_mode():
                         models=toy.REDUNDANT_MODELS, what="a nested pair")
     d = _direction(g)
     looser = g if nesting(f, g) == "f" else f
-    table = block_table(looser, d, meet(f, g))
+    table = block_table(looser, d, intersection(f, g))
     if table["loss"].sum() == 0.0:
         pytest.skip("this pair's failure mode is zero")
     assert table["loss_frac"].sum() == pytest.approx(1.0)
@@ -167,7 +139,7 @@ def test_block_table_fractions_sum_to_one_for_a_nonzero_mode():
 
 def test_summary_reports_attribution_shape():
     """The single-model counterpart of gap_summary.  On the redundant toy the
-    parallel twins are one block of size 2 with a 1-dimensional trade space --
+    parallel twins are one block of size 2 with a 1-dimensional shift space --
     the smallest case where constraint-level attribution is unidentified."""
     sys = toy.REDUNDANT_MODELS["derate"][1]
     row = summary(sys, _direction(sys), labels={"case": "redundant"}, solver=CLEAR)
@@ -177,13 +149,13 @@ def test_summary_reports_attribution_shape():
     assert row["n_priced"] == 2
     assert row["n_blocks"] == 1
     assert row["max_block"] == 2
-    assert row["dim_trade_space"] == 1
+    assert row["dim_shift_space"] == 1
 
     # the plain toy has a unique dual: every priced row is its own block
     _, g = toy.MODELS["derate"]
     plain = summary(g, _direction(g), solver=CLEAR)
     assert plain["max_block"] == 1
-    assert plain["dim_trade_space"] == 0
+    assert plain["dim_shift_space"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +163,7 @@ def test_summary_reports_attribution_shape():
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("case", list(toy.MODELS))
 def test_block_table_support_sum_to_the_support_value(case):
-    """cor:block_value_invariance -- W partitions h(model;y).  One model: no
+    """thm:blocks(ii) -- W partitions h(model;y).  One model: no
     target, no failure mode, nothing about misalignment."""
     _, g = toy.MODELS[case]
     d = _direction(g)
@@ -201,15 +173,15 @@ def test_block_table_support_sum_to_the_support_value(case):
 
 
 @pytest.mark.parametrize("case", list(toy.REDUNDANT_MODELS))
-def test_block_table_support_trade_space_is_computed_not_assumed(case):
-    """dim_trade_space is dim ker C restricted to the block, not `size - 1`.  It
+def test_block_table_support_shift_space_is_computed_not_assumed(case):
+    """dim_shift_space is dim S restricted to the block, not `size - 1`.  It
     is 0 for every singleton; on the redundant variant the parallel SLa/SLb pair
     is the block where it is nonzero."""
     _, g = toy.REDUNDANT_MODELS[case]
     for row in block_table(g, _direction(g)).iter_rows(named=True):
-        assert 0 <= row["dim_trade_space"] <= row["size"] - 1
+        assert 0 <= row["dim_shift_space"] <= row["size"] - 1
         if row["size"] == 1:
-            assert row["dim_trade_space"] == 0
+            assert row["dim_shift_space"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -218,13 +190,13 @@ def test_block_table_support_trade_space_is_computed_not_assumed(case):
 @pytest.mark.parametrize("case", list(toy.MODELS))
 @pytest.mark.parametrize("mode", ["U", "V"])
 def test_block_table_misalignment_sum_to_the_failure_mode(case, mode):
-    """cor:exact_split at block granularity: the blocks partition J*, so their
+    """prop:exact_split at block granularity: the blocks partition J*, so their
     shares reproduce the mode exactly."""
     f, g = toy.MODELS[case]
     d = _direction(g)
     modes = gap_summary(f, g, d, solver=CLEAR)
-    table = block_table(f if mode == "U" else g, d, meet(f, g))
-    scale = max(1.0, abs(modes["h_f"]), abs(modes["h_g"]))
+    table = block_table(f if mode == "U" else g, d, intersection(f, g))
+    scale = max(1.0, abs(modes["h_ftr"]), abs(modes["h_dam"]))
     assert table["loss"].sum() == pytest.approx(modes[mode], abs=1e-6 * scale)
 
 
@@ -236,9 +208,9 @@ def test_block_table_misalignment_share_lies_in_its_own_range(case, mode):
     faces."""
     f, g = toy.MODELS[case]
     d = _direction(g)
-    scale = max(1.0, abs(gap_summary(f, g, d, solver=CLEAR)["h_g"]))
+    scale = max(1.0, abs(gap_summary(f, g, d, solver=CLEAR)["h_dam"]))
     looser = f if mode == "U" else g
-    for row in block_table(looser, d, meet(f, g)).iter_rows(named=True):
+    for row in block_table(looser, d, intersection(f, g)).iter_rows(named=True):
         assert row["loss_lo"] <= row["loss"] + 1e-6 * scale
         assert row["loss"] <= row["loss_hi"] + 1e-6 * scale
 
@@ -249,13 +221,13 @@ def test_block_table_misalignment_agree_with_block_shares():
     size-2 block, so the grouping is doing something."""
     f, g = toy.REDUNDANT_MODELS["mixed"]
     d = _direction(g)
-    table = block_table(g, d, meet(f, g))
+    table = block_table(g, d, intersection(f, g))
 
     problem = SupportProblem(g, d)
     sol = problem.solve(solver=CLEAR)
     blocks = attribution_blocks(problem, J_star(problem, sol))
-    q = SupportProblem(meet(f, g), d).solve(solver=CLEAR, want_primal=True).q
-    share = row_shares(g, meet(f, g), sol.mu, q)
+    q = SupportProblem(intersection(f, g), d).solve(solver=CLEAR, want_primal=True).q
+    share = row_shares(g, intersection(f, g), sol.mu, q)
 
     assert table["rows"].to_list() == [[int(i) for i in rows] for rows in blocks]
     assert table["loss"].to_list() == pytest.approx(
@@ -272,14 +244,14 @@ def test_block_table_carries_both_attributions():
     which is why they are easy to confuse and why they are separate functions."""
     f, g = toy.REDUNDANT_MODELS["mixed"]
     d = _direction(g)
-    m = meet(f, g)
+    m = intersection(f, g)
     joined = block_table(g, d).join(
         block_table(g, d, m).drop("members", "rows", "size"), on="block"
     )
     modes = gap_summary(f, g, d, solver=CLEAR)
-    scale = max(1.0, abs(modes["h_g"]))
+    scale = max(1.0, abs(modes["h_dam"]))
     assert joined.height == block_table(g, d).height
-    assert joined["value"].sum() == pytest.approx(modes["h_g"], abs=1e-6 * scale)
+    assert joined["value"].sum() == pytest.approx(modes["h_dam"], abs=1e-6 * scale)
     assert joined["loss"].sum() == pytest.approx(modes["V"], abs=1e-6 * scale)
 
 
@@ -290,11 +262,11 @@ def test_block_table_misalignment_refuse_a_crossing_pair():
     _, f, g = find_case(lambda f, g: nesting(f, g) == "cross", what="a crossing pair")
     d = _direction(g)
     for a, b in ((f, g), (g, f)):
-        with pytest.raises(ValueError, match="must be contained"):
+        with pytest.raises(ValueError, match="must be feasible"):
             block_table(a, d, b)
 
 
-def test_block_table_misalignment_accept_any_nested_pair_not_just_the_meet():
+def test_block_table_misalignment_accept_any_nested_pair_not_just_the_intersection():
     """What the pair form buys: a nested pair needs no intersection.  Where f is
     inside g, (g, f) measures what the DAM loses on adopting the FTR limits --
     and f *is* f ^ g there, so that is exactly V."""
@@ -303,7 +275,7 @@ def test_block_table_misalignment_accept_any_nested_pair_not_just_the_meet():
     row = gap_summary(f, g, d, solver=CLEAR)
     table = block_table(g, d, f)
     assert table["loss"].sum() == pytest.approx(
-        row["V"], abs=1e-6 * max(1.0, abs(row["h_g"]))
+        row["V"], abs=1e-6 * max(1.0, abs(row["h_dam"]))
     )
 
 
@@ -314,8 +286,27 @@ def test_block_table_misalignment_label_and_stack_by_mode():
     d = _direction(g)
     both = pl.concat(
         [
-            block_table(looser, d, meet(f, g), labels={"mode": m})
+            block_table(looser, d, intersection(f, g), labels={"mode": m})
             for m, looser in (("U", f), ("V", g))
         ]
     )
     assert set(both["mode"]) == {"U", "V"}
+
+
+def test_an_uncongested_direction_gives_empty_tables_that_still_stack():
+    """Most RTS hours price nothing.  The tables must come back empty with their
+    columns, and the records with zeros, so a sweep over intervals stacks."""
+    f, g = toy.MODELS["mixed"]
+    v = np.zeros(3)
+    both = intersection(f, g)
+    for target in (None, both):
+        table = block_table(g, v, target, labels={"mode": "V"})
+        assert table.height == 0
+        assert {"mode", "block", "value", "dim_shift_space"} <= set(table.columns)
+        if target is not None:
+            assert {"loss", "loss_lo", "loss_hi", "identified", "loss_frac"} <= set(table.columns)
+            full = block_table(g, _direction(g), both, labels={"mode": "V"})
+            assert pl.concat([full, table]).height == full.height
+    row = gap_summary(f, g, v, solver=CLEAR)
+    assert row["U"] == pytest.approx(0.0, abs=1e-6) and row["V"] == pytest.approx(0.0, abs=1e-6)
+    assert row["n_priced_U"] == row["n_blocks_V"] == 0

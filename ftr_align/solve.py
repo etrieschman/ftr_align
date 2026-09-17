@@ -133,7 +133,12 @@ def solve_support_cvxpy(
         mu=mu_value,
         s=float(s.value),
         status="solved",
-        q=_solve_primal(problem, opts) if want_primal else None,
+        # The primal optimizer is the multiplier on dual feasibility,
+        # K^T mu + 1 s = d, so it comes out of this same solve -- no second LP.
+        # (A separate primal solve also failed outright on CLARABEL at RTS scale.)
+        # From an interior-point engine it is the analytic centre of the optimal
+        # face; from simplex, a vertex.
+        q=-np.asarray(constraints[0].dual_value, dtype=float) if want_primal else None,
         binding=mu_value > ZERO_TOL,
         # The engine cvxpy actually ran, not the one that was asked for -- `opts`
         # may name none at all, and a bare solve() defaults to CLARABEL.
@@ -142,17 +147,6 @@ def solve_support_cvxpy(
         # property; a custom solver declares `interior` for itself.
         interior=engine.upper() == CENTER["solver"],
     )
-
-
-def _solve_primal(problem: SupportProblem, opts: dict | None = None) -> np.ndarray:
-    """Primal support: ``max d^T q  s.t.  K_active q <= b_active, 1^T q = 0``."""
-    opts = opts or {}
-    data = problem.data
-    active = data.active
-    q = cp.Variable(data.K.shape[1], name="q")
-    objective = cp.Maximize(data.direction @ q)
-    cp.Problem(objective, network_constraints(data.K[active], data.b[active], q)).solve(**opts)
-    return np.asarray(q.value, dtype=float)
 
 
 # ----------------------------------------------------------------------------
@@ -184,11 +178,11 @@ def clear_dam(model: NetworkModel, inst: DamInstance, solver=None) -> DamResult:
     ``d = K^T y*`` it induces.
 
     ``d`` is what downstream code carries: it lives in node space, shared by every
-    model on the network, so support values need no alignment.
+    model on the same nodes, so support values need no alignment.
     """
     active = model.active
     q_gen = cp.Variable(inst.M_gen.shape[1], name="q_gen")
-    q = cp.Variable(model.network.n_nodes, name="q")
+    q = cp.Variable(model.n_nodes, name="q")
 
     # The same primal network block the support problem uses.  Keeping it stacked
     # (rather than one cvxpy constraint per contingency) means the dual of the

@@ -18,7 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from ftr_align import clear_dam, meet
+from ftr_align import clear_dam, intersection
 from ftr_align.cases import toy
 from ftr_align.metrics import row_labels
 from ftr_align.polytope import basis_from_columns, faces
@@ -42,7 +42,7 @@ T = basis_from_columns([(0.0, 1.0, -1.0), (1.0, -1.0, 0.0)])
 XLABEL, YLABEL = r"$L$  (load served, MW)", r"$q_S$  (solar dispatch, MW)"
 XLIM, YLIM = (-100, 200), (-100, 200)
 
-DAM_LS, FTR_LS, MEET_LS = "solid", "dotted", "dashed"
+DAM_LS, FTR_LS, INT_LS = "solid", "dotted", "dashed"
 DAM_LW, FTR_LW = 1.8, 0.9  # model = width, so dash is free to mean contingency
 
 
@@ -160,7 +160,7 @@ for case, (f_model, g_model) in toy.MODELS.items():
         # regions already drawn, so the legend would add a third entry for
         # something the picture states.
         # draw_region(
-        #     ax, meet(f_model, g_model), T, color="k", ls=MEET_LS, fill_alpha=0.0, lw=1.6
+        #     ax, intersection(f_model, g_model), T, color="k", ls=INT_LS, fill_alpha=0.0, lw=1.6
         # )
 
         draw_optimum(ax, g_model, direction, T, solver=CLEAR, color="grey", ls=DAM_LS)

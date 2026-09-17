@@ -1,9 +1,21 @@
 """Network geometry: incidence, PTDF, and the models built on them.
 
-A :class:`NetworkModel` owns a :class:`PhysicalNetwork` and a tuple of
-:class:`Contingency`, and assembles the stacked system
+A :class:`NetworkModel` is a constraint system on a node set,
 
-    K = [H; -H]        b = [upper; lower]        Q(b) = {q : K q <= b, 1^T q = 0}
+    K = [H; -H]        b = [upper; lower]        Q = {q : K q <= b, 1^T q = 0}
+
+stored one contingency at a time: each :class:`ContingencyRows` carries its own
+PTDF rows ``H_c`` and limits, and ``H``, ``K`` and ``b`` are assembled from them on
+first use.  Nothing downstream needs more than ``(K, b)`` and the node set; the
+physical network is one way to *build* the rows (:meth:`NetworkModel.build`), not
+part of what a model is.  So two models built on different networks -- different
+elements, shift factors or reference buses -- are comparable as long as they share
+nodes, and :func:`intersection` is just the stack.
+
+Keeping the contingencies separate is for scale.  It lets an intersection share
+its parents' arrays instead of copying them, and it is the seam where rows can
+later be generated or screened per contingency rather than materialised as one
+dense ``K``.
 
 ``b`` is a full-length vector over the model's rows, ``+inf`` where a row is
 unmonitored.
@@ -11,8 +23,9 @@ unmonitored.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Hashable, Iterable
+from dataclasses import dataclass, replace
+from functools import cached_property
 
 import numpy as np
 import polars as pl
@@ -128,14 +141,14 @@ def element_label(element_names, i: int) -> str:
 
 
 # ----------------------------------------------------------------------------
-# Contingency: a contingency key together with the limits enforced under it
+# Contingency: the builder's input -- a key and the limits enforced under it
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Contingency:
     """A contingency (its ``key``) and the per-element flow limits enforced under
-    it.  Pass a single ``upper`` for symmetric limits; give ``lower`` only when
-    it differs.  Use ``+inf`` to leave an element unmonitored under this
-    contingency."""
+    it -- the input to :meth:`NetworkModel.build`.  Pass a single ``upper`` for
+    symmetric limits; give ``lower`` only when it differs.  Use ``+inf`` to leave
+    an element unmonitored under this contingency."""
 
     key: ContingencyKey
     upper: np.ndarray  # (ell,)
@@ -149,151 +162,164 @@ class Contingency:
 
 
 # ----------------------------------------------------------------------------
-# Network model: geometry (K) + limits (b), assembled from contingencies
+# Network model: constraint rows on a node set, one contingency at a time
 # ----------------------------------------------------------------------------
-@dataclass(frozen=True)
-class NetworkModel:
-    """A network model owns its geometry.  Build it with :meth:`build` from a
-    network and a list of :class:`Contingency`; it assembles ``K = [H; -H]`` and
-    the stacked limit vector ``b``.  ``b`` and any per-row vector (a certificate
-    ``y``, duals ``mu``) line up entrywise over the rows of ``K``."""
+@dataclass(frozen=True, eq=False)
+class ContingencyRows:
+    """One contingency's rows of a model: the PTDF rows ``H_c`` of its elements
+    under that contingency, with their upper and lower flow limits.  Row ``i``
+    contributes ``H_c[i] q <= upper[i]`` and ``-H_c[i] q <= lower[i]``."""
 
-    network: PhysicalNetwork
-    contingencies: tuple[Contingency, ...]
-    K: np.ndarray  # (2 * C * ell, n), dense
-    b: np.ndarray  # (2 * C * ell,) limits; +inf marks an unmonitored row
+    key: Hashable  # identifies the contingency within a model; None is the base case
+    label: str
+    elements: tuple[str, ...]  # (r,)
+    H: np.ndarray  # (r, n)
+    upper: np.ndarray  # (r,)
+    lower: np.ndarray  # (r,)
+
+
+@dataclass(frozen=True, eq=False)
+class NetworkModel:
+    """A network model: constraint rows over a node set.
+
+    ``K = [H; -H]`` with ``H`` the contingencies' PTDF rows stacked in order, and
+    ``b = [upper; lower]`` co-indexed with it.  Any per-row vector (a certificate
+    ``y``, duals ``mu``) lines up entrywise with ``b``.  Build one from a physical
+    network with :meth:`build`, or from two others with :func:`intersection`."""
+
+    nodes: tuple[str, ...]
+    contingencies: tuple[ContingencyRows, ...]
 
     @classmethod
     def build(
         cls, network: PhysicalNetwork, contingencies: Iterable[Contingency]
     ) -> NetworkModel:
-        conts = tuple(contingencies)
-        H = np.vstack([network.ptdf(c.key) for c in conts])
-        K = np.vstack([H, -H])
-        b = np.concatenate(
-            [
-                np.concatenate([c.upper for c in conts]),
-                np.concatenate([c.lower for c in conts]),
-            ]
+        names = network.element_names
+        elements = tuple(element_label(names, i) for i in range(network.n_elements))
+        nodes = (
+            tuple(str(v) for v in network.node_names)
+            if network.node_names is not None
+            else tuple(str(i) for i in range(network.n_nodes))
         )
-        return cls(network=network, contingencies=conts, K=K, b=b)
+        rows = tuple(
+            ContingencyRows(
+                key=c.key,
+                label=contingency_label(c.key, names),
+                elements=elements,
+                H=network.ptdf(c.key),
+                upper=c.upper,
+                lower=c.lower,
+            )
+            for c in contingencies
+        )
+        return cls(nodes=nodes, contingencies=rows)
+
+    # -- the constraint system, assembled on first use ------------------------
+    @cached_property
+    def H(self) -> np.ndarray:
+        """Stacked PTDF -- the upper half of ``K``, contingencies in order."""
+        return np.vstack([c.H for c in self.contingencies])
+
+    @cached_property
+    def K(self) -> np.ndarray:
+        return np.vstack([self.H, -self.H])
+
+    @cached_property
+    def b(self) -> np.ndarray:
+        return np.concatenate(
+            [c.upper for c in self.contingencies] + [c.lower for c in self.contingencies]
+        )
 
     @property
-    def keys(self) -> list[ContingencyKey]:
-        return [c.key for c in self.contingencies]
-
-    @property
-    def ell(self) -> int:
-        return self.network.n_elements
+    def n_nodes(self) -> int:
+        return len(self.nodes)
 
     @property
     def n_rows(self) -> int:
-        return self.K.shape[0]
-
-    @property
-    def H(self) -> np.ndarray:
-        """Stacked PTDF -- the upper half of ``K = [H; -H]``, one block of ``ell``
-        rows per contingency in :attr:`keys` order."""
-        return self.K[: self.n_rows // 2]
+        return 2 * sum(len(c.upper) for c in self.contingencies)
 
     @property
     def active(self) -> np.ndarray:
         """Rows with finite limits (monitored)."""
         return np.isfinite(self.b)
 
-    def rows_upper(self, key: ContingencyKey) -> np.ndarray:
-        s = self.keys.index(key) * self.ell
-        return np.arange(s, s + self.ell)
+    @property
+    def keys(self) -> list[Hashable]:
+        return [c.key for c in self.contingencies]
 
-    def rows_lower(self, key: ContingencyKey) -> np.ndarray:
-        half = len(self.contingencies) * self.ell
-        s = self.keys.index(key) * self.ell
-        return np.arange(half + s, half + s + self.ell)
+    # -- row lookup -----------------------------------------------------------
+    def _offset(self, key: Hashable) -> tuple[int, int]:
+        """Start of ``key``'s rows in ``H`` and their count.  Raises if ``key`` is
+        absent or appears more than once, as it can in an intersection."""
+        hits = [i for i, c in enumerate(self.contingencies) if c.key == key]
+        if len(hits) != 1:
+            raise KeyError(
+                f"contingency {key!r} appears {len(hits)} times in this model; "
+                "look rows up by label instead (see `labels`)."
+            )
+        start = sum(len(c.upper) for c in self.contingencies[: hits[0]])
+        return start, len(self.contingencies[hits[0]].upper)
+
+    def rows_upper(self, key: Hashable) -> np.ndarray:
+        start, r = self._offset(key)
+        return np.arange(start, start + r)
+
+    def rows_lower(self, key: Hashable) -> np.ndarray:
+        start, r = self._offset(key)
+        return np.arange(self.n_rows // 2 + start, self.n_rows // 2 + start + r)
 
     def labels(self) -> pl.DataFrame:
         """Per-constraint identity -- ``constraint`` (the row index into ``K``/
         ``b``/``mu``) with its ``(contingency, element, side)`` -- for output
         tables.  Each row of ``K`` is one constraint ``K[i] q <= b[i]``."""
-        ell = self.ell
-        names = self.network.element_names
-        conts = [
-            contingency_label(c.key, names)
-            for c in self.contingencies
-            for _ in range(ell)
-        ]
-        elems = [
-            element_label(names, i) for _ in self.contingencies for i in range(ell)
-        ]
+        return self._labels
+
+    @cached_property
+    def _labels(self) -> pl.DataFrame:
+        conts = [c.label for c in self.contingencies for _ in c.elements]
+        elems = [e for c in self.contingencies for e in c.elements]
+        half = len(elems)
         return pl.DataFrame(
             {
-                "constraint": np.arange(self.n_rows),
+                "constraint": np.arange(2 * half),
                 "contingency": conts * 2,
                 "element": elems * 2,
-                "side": ["upper"] * (self.n_rows // 2) + ["lower"] * (self.n_rows // 2),
+                "side": ["upper"] * half + ["lower"] * half,
             }
         )
 
 
-# ----------------------------------------------------------------------------
-# Result-conversion tools: put two models' per-row vectors on a common index
-# ----------------------------------------------------------------------------
 def with_limits(model: NetworkModel, b: np.ndarray) -> NetworkModel:
-    """``model`` with new limits, rebuilding its ``Contingency`` objects too.
-
-    Necessary because ``align`` reads limits off that list, so replacing only ``b``
-    would leave a repaired model re-aligning to its old values.
-    """
+    """``model`` with limit vector ``b``: same rows, same ``H`` arrays (shared, not
+    copied), new ``upper``/``lower`` per contingency."""
     b = np.asarray(b, dtype=float)
-    half, ell = model.n_rows // 2, model.ell
-    conts = tuple(
-        Contingency(
-            c.key,
-            upper=b[i * ell : (i + 1) * ell],
-            lower=b[half + i * ell : half + (i + 1) * ell],
+    half, start, rows = model.n_rows // 2, 0, []
+    for c in model.contingencies:
+        r = len(c.upper)
+        rows.append(
+            replace(c, upper=b[start : start + r], lower=b[half + start : half + start + r])
         )
-        for i, c in enumerate(model.contingencies)
-    )
-    return NetworkModel(
-        network=model.network, contingencies=conts, K=model.K, b=b
-    )
+        start += r
+    return NetworkModel(nodes=model.nodes, contingencies=tuple(rows))
 
 
-def align(*models: NetworkModel) -> list[NetworkModel]:
-    """Rebuild several models onto one common (union) contingency set so their
-    rows line up entrywise.  Contingencies a model does not enforce are added
-    with ``+inf`` limits (unmonitored).  Used for row-level attribution
-    comparison; not required to compute support values or the gap."""
-    network = models[0].network
-    union: list[ContingencyKey] = []
-    for model in models:
-        for key in model.keys:
-            if key not in union:
-                union.append(key)
+def intersection(*models: NetworkModel) -> NetworkModel:
+    """The intersection model: ``Q = Q(m_1) inter ... inter Q(m_k)``.
 
-    ell = network.n_elements
-    out = []
-    for model in models:
-        by_key = {c.key: c for c in model.contingencies}
-        conts = [
-            by_key.get(key, Contingency(key, np.full(ell, np.inf))) for key in union
-        ]
-        out.append(NetworkModel.build(network, conts))
-    return out
-
-
-def meet(f: NetworkModel, g: NetworkModel) -> NetworkModel:
-    """``f ^ g``: the model whose feasible set is ``Q(f) inter Q(g)``.
-
-    Under common PTDFs the stacked system has identical row pairs and collapses
-    exactly to the elementwise minimum after alignment.  Raises where the PTDFs
-    differ, which is where the stack fallback would go.
+    The constraints of every model, stacked -- ``K = [K_1; ...; K_k]`` up to the
+    ordering of rows, and ``b`` likewise.  The only requirement is a common node
+    set; the models may differ in elements, shift factors and reference bus.  A
+    contingency both models enforce appears once per model, and the tighter limit
+    binds.  The rows keep their parents' ``H`` arrays, so nothing is copied until
+    ``K`` is assembled.
     """
-    f_u, g_u = align(f, g)
-    if not np.allclose(f_u.K, g_u.K):
-        raise NotImplementedError(
-            "meet() requires a common constraint geometry (Assumption 1): the two "
-            "models' PTDFs differ, so their rows do not correspond and there is no "
-            "elementwise minimum to take.  The intersection is still well defined "
-            "as the stacked system [K_f; K_g] q <= [f; g] -- implement that here."
-        )
-    return with_limits(f_u, np.minimum(f_u.b, g_u.b))
+    nodes = models[0].nodes
+    for m in models[1:]:
+        if m.nodes != nodes:
+            raise ValueError(
+                "intersection needs models on one node set, in one order; got "
+                f"{nodes} and {m.nodes}."
+            )
+    return NetworkModel(
+        nodes=nodes, contingencies=tuple(c for m in models for c in m.contingencies)
+    )

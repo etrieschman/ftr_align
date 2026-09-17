@@ -9,8 +9,8 @@ constants:
 
   * ``SCENARIOS`` -- the three DAM clearing scenarios (a)/(b)/(c) as
     ``DamInstance``s (built with :func:`dam_instance`).
-  * ``MODELS`` -- the model differences as ``(f, g)`` pairs: the FTR/SFT model
-    ``f`` first, the DAM model ``g`` second, matching ``Delta(f, g; y)``.
+  * ``MODELS`` -- the model differences as ``(ftr, dam)`` pairs: the FTR/SFT model
+    first, the DAM model second, matching ``Delta(v) = h_FTR(v) - h_DAM(v)``.
     Both share ``NETWORK`` and differ only in the contingencies each enforces
     (and a 0.75 FTR limit derate in ``"derate"``).
   * ``REDUNDANT_MODELS`` -- the same three differences on the double-circuit
@@ -44,7 +44,7 @@ P_GEN = np.array([5.0, 150.0])
 
 # redundant (double-circuit) variant: SL split into parallel SLa, SLb (each
 # reactance 2 -> combined 1, limit 37.5 -> combined 75).  Electrically identical
-# to the base toy, but SLa/SLb share a PTDF row, so mu trades between them and
+# to the base toy, but SLa/SLb share a PTDF row, so mu shifts between them and
 # {SLa, SLb} is a genuine size-2 attribution block.
 REDUNDANT_ELEMENT_NAMES = np.array(["SLa", "SLb", "CL", "SC"])
 REDUNDANT_INC = np.array([[1, 1, 0, 1], [0, 0, 1, -1], [-1, -1, -1, 0]], dtype=float)

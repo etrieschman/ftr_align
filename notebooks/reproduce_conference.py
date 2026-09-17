@@ -19,7 +19,7 @@ from matplotlib.lines import Line2D
 from ftr_align import SupportProblem, clear_dam
 from ftr_align.cases import toy
 from ftr_align.metrics import row_labels, gap_summary
-from ftr_align.network import NetworkModel, contingency_label, element_label
+from ftr_align.network import NetworkModel
 from ftr_align.polytope import basis_from_columns, faces
 from ftr_align.solve import CENTER
 from ftr_align.viz import (
@@ -42,16 +42,15 @@ def net_dual(model: NetworkModel, mu: np.ndarray) -> pl.DataFrame:
     travel under that letter: this one, and the raw stacked multipliers that
     ``metrics.constraint_table`` reports one row per side.  They are not interchangeable
     and the name should say which you are holding."""
-    names = model.network.element_names
     records = []
     for c in model.contingencies:
         net = mu[model.rows_upper(c.key)] - mu[model.rows_lower(c.key)]
-        for e in range(model.ell):
+        for e, element in enumerate(c.elements):
             if abs(net[e]) > NET_DUAL_TOL:
                 records.append(
                     {
-                        "contingency": contingency_label(c.key, names),
-                        "element": element_label(names, e),
+                        "contingency": c.label,
+                        "element": element,
                         "mu_signed": float(net[e]),
                     }
                 )
@@ -96,7 +95,7 @@ def _dollars(*names):
 # -------------------------------------
 # TABLE II: FTR-DAM alignment
 # -------------------------------------
-# MS_DAM = h(g; y*) (prop:support -- the realized merchandising surplus), the gap
+# MS_DAM = h(g; y*) (prop:cr_support -- the realized congestion revenue), the gap
 # Delta = h(f) - h(g), and the alignment ratio eta = h(f)/h(g).  The failure
 # modes U and V come along for free: gap_summary already solves the intersection
 # f ^ g, and Delta = U - V identically, so they are the paper's one number split
@@ -120,8 +119,8 @@ table_ii = (
     .select(
         "variation",
         "scenario",
-        pl.col("h_g").alias("MS_DAM"),
-        pl.col("h_f").alias("MS_FTR"),
+        pl.col("h_dam").alias("MS_DAM"),
+        pl.col("h_ftr").alias("MS_FTR"),
         "Delta",
         "relative_gap",
         "U",
@@ -141,7 +140,7 @@ display(table_ii)
 # Per (contingency, element) net duals for both models, over every model
 # difference and scenario -- on the plain 3-node and on the double-circuit
 # variant, where the parallel SLa/SLb pair makes the optimal dual face
-# non-singleton and mu trades between the two rows.
+# non-singleton and mu shifts between the two rows.
 for models in (toy.MODELS, toy.REDUNDANT_MODELS):
     frames = []
     for case, (f_model, g_model) in models.items():

@@ -21,16 +21,16 @@ from .solve import SupportProblem
 # existing figures.
 DAM_STYLE = dict(color="grey", ls="solid", fill_alpha=0.30)
 FTR_STYLE = dict(color="C4", ls="dotted", fill_alpha=0.30)
-MEET_STYLE = dict(color="C1", ls="dashed", fill_alpha=0.0)
+INT_STYLE = dict(color="C1", ls="dashed", fill_alpha=0.0)
 
 
 def basis(model: NetworkModel, drop: int | None = None) -> np.ndarray:
-    """Plot basis for a model, eliminating node ``drop`` (default: the slack).
+    """Plot basis for a model, eliminating node ``drop`` (default: the last node).
 
     Any ``T`` with balanced columns works; pass your own for different axes.
     """
-    n = model.network.n_nodes
-    return free_basis(n, model.network.slack_idx if drop is None else drop)
+    n = model.n_nodes
+    return free_basis(n, n - 1 if drop is None else drop)
 
 
 def to_plot(T: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -74,11 +74,21 @@ def draw_region(
 
 
 def _element_color(model: NetworkModel, row: int) -> str:
-    """Colour for a constraint row, keyed by its element, so a line keeps its
-    identity across contingencies, models and figures.  Upper and lower rows of the
-    same element share it.
+    """Colour for a constraint row, keyed by its element's position within its
+    contingency, so a line keeps its identity across contingencies, models and
+    figures.  Upper and lower rows of the same element share it.
     """
-    return f"C{int(row) % model.ell}"
+    return f"C{_position(model, row)[1]}"
+
+
+def _position(model: NetworkModel, row: int) -> tuple[int, int]:
+    """``(contingency index, element index)`` of a row of ``K``."""
+    row = int(row) % (model.n_rows // 2)
+    for c_idx, c in enumerate(model.contingencies):
+        if row < len(c.upper):
+            return c_idx, row
+        row -= len(c.upper)
+    raise IndexError(row)
 
 
 def draw_constraints(
@@ -103,12 +113,13 @@ def draw_constraints(
     M, c, rows = plane_system(model, T)
     labels = model.labels()
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    half, ell = model.n_rows // 2, model.ell
+    half = model.n_rows // 2
 
     for a, rhs, row in zip(M, c, rows):
         row = int(row)
-        colour = colors[row % ell] if colors is not None else _element_color(model, row)
-        style = ls if ls is not None else styles[((row % half) // ell) % len(styles)]
+        c_idx, e_idx = _position(model, row)
+        colour = colors[e_idx] if colors is not None else _element_color(model, row)
+        style = ls if ls is not None else styles[c_idx % len(styles)]
         upper = row < half
         text = (
             f"{labels['contingency'][row]}:{labels['element'][row]}"
@@ -216,13 +227,12 @@ def label_axes(
     Defaults to a plain drop-one-node basis; pass ``xlabel``/``ylabel`` for a basis
     whose axes are combinations rather than single nodes.
     """
-    net = model.network
-    drop = net.slack_idx if drop is None else drop
-    names = net.node_names
-    kept = [i for i in range(net.n_nodes) if i != drop % net.n_nodes]
+    n, names = model.n_nodes, model.nodes
+    drop = n - 1 if drop is None else drop
+    kept = [i for i in range(n) if i != drop % n]
     if xlabel is None:
-        xlabel = f"q[{kept[0]}]" if names is None else f"$q_{{{names[kept[0]]}}}$"
+        xlabel = f"$q_{{{names[kept[0]]}}}$"
     if ylabel is None:
-        ylabel = f"q[{kept[1]}]" if names is None else f"$q_{{{names[kept[1]]}}}$"
+        ylabel = f"$q_{{{names[kept[1]]}}}$"
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)

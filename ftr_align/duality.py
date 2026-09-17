@@ -3,20 +3,19 @@ them.
 
 The optimal dual face ``Lambda*(b;y)`` need not be a singleton, so per-row
 multipliers are characterised by ranges over it.  Over the dual-optimal support
-``J*`` the trade space ``D = ker C`` says which weight shifts change nothing;
-its matroid components are the attribution blocks.
+``J*`` the shift space ``S = ker Kbar_{J*}^T`` says which reweightings of the
+priced rows leave the certificate optimal; its matroid components are the
+attribution blocks.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import NamedTuple
 
 import cvxpy as cp
 import numpy as np
 from scipy.linalg import null_space, orth, qr
 
-from .network import NetworkModel, align
 from .solve import (
     CENTER,
     Lambda_star,
@@ -213,20 +212,23 @@ def J_star(
 
 
 # ----------------------------------------------------------------------------
-# Trade space and attribution blocks
+# Shift space and attribution blocks
 # ----------------------------------------------------------------------------
-def trade_matrix(problem: SupportProblem, index: np.ndarray) -> np.ndarray:
-    """``C(b;y)``: columns ``[k_i - mean(k_i); b_i]`` for ``i in index``.  Shape
-    ``(n+1, |index|)``.
+def shift_matrix(problem: SupportProblem, index: np.ndarray) -> np.ndarray:
+    """``Kbar_{J}^T``: the demeaned normals ``k_i - mean(k_i)`` of the rows in
+    ``index``, as columns.  Shape ``(n, |index|)``.
+
+    Limits do not enter (prop:kernel): on ``J*`` a shift that cancels in node
+    space also preserves ``sum sigma_i b_i``, because every priced row is tight.
     """
-    K, b = problem.data.K, problem.data.b
-    cols = [np.concatenate([K[i] - K[i].mean(), [b[i]]]) for i in index]
-    return np.array(cols).T if cols else np.zeros((K.shape[1] + 1, 0))
+    K = problem.data.K
+    cols = [K[i] - K[i].mean() for i in index]
+    return np.array(cols).T if cols else np.zeros((K.shape[1], 0))
 
 
-def trade_space(C: np.ndarray, tol: float = RANK_TOL) -> np.ndarray:
-    """``D = ker C``: weight trades over the support that change neither the
-    aggregate congestion price nor the support value.  Columns are a basis.
+def shift_space(C: np.ndarray, tol: float = RANK_TOL) -> np.ndarray:
+    """``S = ker Kbar_J^T``: reweightings of the rows that move no flow, so turn
+    one optimal certificate into another.  Columns are a basis.
     """
     if C.shape[1] == 0:
         return np.zeros((0, 0))
@@ -235,7 +237,7 @@ def trade_space(C: np.ndarray, tol: float = RANK_TOL) -> np.ndarray:
 
 def connected_blocks(C: np.ndarray, tol: float = RANK_TOL) -> list[list[int]]:
     """Partition the columns of ``C`` into matroid-connectivity blocks -- the finest
-    partition along which ``ker C`` splits as a direct sum.
+    partition along which the shift space ``S = ker C`` splits as a direct sum.
 
     From the fundamental circuits of one QR-pivoted basis; basis-independent.
     Returns column positions.
@@ -278,14 +280,14 @@ def attribution_blocks(
     problem: SupportProblem, index: np.ndarray | None = None
 ) -> list[np.ndarray]:
     """Attribution blocks as global row indices: the finest partition of ``J*(b;y)``
-    along which the trade space splits, hence the finest units carrying an invariant
+    along which the shift space splits, hence the finest units carrying an invariant
     attributed value.
 
     Pass ``index`` to reuse a support you already have.
     """
     if index is None:
         index = J_star(problem)  # CENTER: support via strict complementarity
-    cols = connected_blocks(trade_matrix(problem, index))
+    cols = connected_blocks(shift_matrix(problem, index))
     return [np.asarray([int(index[c]) for c in group]) for group in cols]
 
 

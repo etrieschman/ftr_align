@@ -4,15 +4,15 @@ import polars as pl
 from tqdm import tqdm
 import plotly.express as px
 
-from ftr_align import SupportProblem, clear_dam, meet
+from ftr_align import SupportProblem, clear_dam, intersection
 from ftr_align import network
 from ftr_align.duality import (
     attribution_blocks,
     block_totals,
     robust_bounds,
     J_star,
-    trade_matrix,
-    trade_space,
+    shift_matrix,
+    shift_space,
 )
 from ftr_align.metrics import gap_summary
 from ftr_align.metrics import EPS, block_table
@@ -20,7 +20,7 @@ from ftr_align.cases import rts_gmlc
 from ftr_align.solve import CENTER
 
 # One engine throughout.  Anything touching J* -- the attribution blocks, the
-# trade space -- needs the analytic-centre certificate, and simplex measured only
+# shift space -- needs the analytic-centre certificate, and simplex measured only
 # ~25% faster on the value-only sweep (191ms vs 240ms per solve), which is not
 # worth running two kinds of certificate through one notebook.
 SOLVER = CENTER
@@ -75,7 +75,7 @@ for interval in tqdm(intervals):
             "interval": interval,
             "MS_DAM": sol_g.value,
             "Delta": sol_f.value - sol_g.value,
-            # Delta as a fraction of DAM merchandising surplus.
+            # Delta as a fraction of DAM congestion revenue.
             "relative_gap": (
                 None
                 if abs(sol_g.value) < EPS
@@ -132,22 +132,22 @@ for name, model, prob in (("DAM", dam_model, dam_prob), ("FTR", ftr_model, ftr_p
     sol = prob.solve(solver=CENTER)
     index = J_star(prob, sol)
     blocks = attribution_blocks(prob, index)
-    D = trade_space(trade_matrix(prob, index))
+    S = shift_space(shift_matrix(prob, index))
 
     print(f"\n~~~~~~~~ {name} model")
     print(f"{name} support value:", round(sol.value, 1))
     print(f"{name} support rows :", index.tolist())
-    print(f"{name} trade space dim:", D.shape[1])
+    print(f"{name} shift space dim:", S.shape[1])
     display(block_table(model, prob.data.direction))
 
 
-# Failure modes and their block-level attribution (prop:block_underfunding).
+# Failure modes and their block-level attribution (thm:failure_blocks).
 print("\n~~~~~~~~ Failure modes")
 print(gap_summary(ftr_model, dam_model, dam_sol.direction, solver=SOLVER))
 # The mode is which model you pass first -- always the one that *loses* the
-# value, measured against the intersection (prop:block_underfunding).
-meet_model = meet(ftr_model, dam_model)
+# value, measured against the intersection (thm:failure_blocks).
+int_model = intersection(ftr_model, dam_model)
 for mode, model in (("U", ftr_model), ("V", dam_model)):
     print(f"\n{mode} by block")
-    display(block_table(model, dam_sol.direction, meet_model, labels={"mode": mode}))
+    display(block_table(model, dam_sol.direction, int_model, labels={"mode": mode}))
 # %%

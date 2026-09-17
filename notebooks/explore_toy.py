@@ -4,7 +4,7 @@ import polars as pl
 
 import matplotlib.pyplot as plt
 
-from ftr_align import SupportProblem, clear_dam, meet
+from ftr_align import SupportProblem, clear_dam, intersection
 from ftr_align.metrics import block_table, constraint_table, gap_summary, row_labels
 from ftr_align.cases import toy
 from ftr_align.solve import CENTER
@@ -18,7 +18,7 @@ from ftr_align.viz import (
 )
 
 # CENTER is the library's name for {"solver": "CLARABEL"} -- the analytic-centre
-# certificate.  Required for J* and anything built on it (blocks, trade space),
+# certificate.  Required for J* and anything built on it (blocks, shift space),
 # and the convention the paper's numbers follow.
 
 pl.Config.set_tbl_rows(40)
@@ -90,21 +90,20 @@ display(runs_df)
 # identical PTDF rows, so they land in one block and cannot be split.
 PATTERN, SCENARIO = "mixed", "(a)"
 f_model, g_model = toy.REDUNDANT_MODELS[PATTERN]
-m_model = meet(f_model, g_model)
+int_model = intersection(f_model, g_model)
 d = clear_dam(g_model, toy.SCENARIOS[SCENARIO], solver=CENTER).direction
 
 print(f"PATTERN={PATTERN}, SCENARIO={SCENARIO}")
 display(pl.DataFrame(gap_summary(f_model, g_model, d, solver=CENTER)))
 
 # One table per failure mode.  Reading a row: this block is worth value
-# and accounts for loss, with a range depending on which q_meet is used
+# and accounts for loss, with a range depending on which q_int is used
 for mode, looser in (("U", f_model), ("V", g_model)):
-    display(block_table(looser, d, m_model, labels={"mode": mode}))
+    display(block_table(looser, d, int_model, labels={"mode": mode}))
 
-# Per-constraint detail underneath the blocks: limits, the difference kind, the
-# certificate, the row's share, and the block it landed in.  Only rows that
-# disagree or carry value.
-display(constraint_table(g_model, d, m_model, solver=CENTER))
+# Per-constraint detail underneath the blocks: both limits, the certificate, the
+# row's share, and the block it landed in.  Priced rows only.
+display(constraint_table(g_model, d, int_model, solver=CENTER))
 
 # %%
 # -------------------------------------

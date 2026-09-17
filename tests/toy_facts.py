@@ -14,19 +14,31 @@ freely.
 import numpy as np
 import pytest
 
-from ftr_align import align, clear_dam, meet
+from ftr_align import clear_dam, intersection
 from ftr_align.cases import toy
 
 CLEAR = {"solver": "CLARABEL"}
 TOL = 1e-9
 
 
+def common_limits(*models) -> list[np.ndarray]:
+    """Each model's limits over the union of their row labels, ``+inf`` where a
+    model lacks the row.  Meaningful only for models built on one physical network,
+    where equal labels mean equal PTDF rows -- true of every toy pair."""
+    by_label = [
+        dict(zip(zip(*(m.labels()[c] for c in ("contingency", "element", "side"))), m.b))
+        for m in models
+    ]
+    union = list(dict.fromkeys(k for d in by_label for k in d))
+    return [np.array([d.get(k, np.inf) for k in union]) for d in by_label]
+
+
 def nesting(f, g) -> str:
     """``"f"`` if Q(f) is inside Q(g), ``"g"`` if the reverse, ``"cross"`` if
     neither contains the other.  Equal models report ``"f"``."""
-    f_u, g_u = align(f, g)
-    f_in_g = bool(np.all(f_u.b <= g_u.b + TOL))
-    g_in_f = bool(np.all(g_u.b <= f_u.b + TOL))
+    bf, bg = common_limits(f, g)
+    f_in_g = bool(np.all(bf <= bg + TOL))
+    g_in_f = bool(np.all(bg <= bf + TOL))
     if f_in_g:
         return "f"
     return "g" if g_in_f else "cross"
@@ -35,13 +47,13 @@ def nesting(f, g) -> str:
 def uniform_scale(f, g) -> float | None:
     """``alpha`` if ``f``'s limits are a uniform ``alpha`` times ``g``'s on every
     enforced row, else ``None``."""
-    f_u, g_u = align(f, g)
-    enforced = np.isfinite(f_u.b)
+    bf, bg = common_limits(f, g)
+    enforced = np.isfinite(bf)
     # Both must enforce exactly the same rows: a coverage difference is not a
     # scaling however uniform the shared rows look.
-    if not enforced.any() or not np.array_equal(enforced, np.isfinite(g_u.b)):
+    if not enforced.any() or not np.array_equal(enforced, np.isfinite(bg)):
         return None
-    ratio = f_u.b[enforced] / g_u.b[enforced]
+    ratio = bf[enforced] / bg[enforced]
     return float(ratio[0]) if np.allclose(ratio, ratio[0], atol=1e-12) else None
 
 
@@ -76,8 +88,8 @@ def find_zero_mode(models=None, scenario="(a)"):
     for name, (f, g) in models.items():
         d = direction(g, scenario)
         row = gap_summary(f, g, d, solver=CLEAR)
-        scale = 1e-6 * max(1.0, abs(row["h_f"]), abs(row["h_g"]))
+        scale = 1e-6 * max(1.0, abs(row["h_ftr"]), abs(row["h_dam"]))
         for mode, looser in (("U", f), ("V", g)):
             if abs(row[mode]) < scale:
-                return name, looser, meet(f, g), mode, d
+                return name, looser, intersection(f, g), mode, d
     pytest.skip("no toy case currently has a structurally zero failure mode")

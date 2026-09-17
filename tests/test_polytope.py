@@ -7,7 +7,7 @@ rather than invariant tests -- the parallelogram's corners are known.
 import numpy as np
 import pytest
 
-from ftr_align import Contingency, NetworkModel, PhysicalNetwork, SupportProblem, meet
+from ftr_align import Contingency, NetworkModel, PhysicalNetwork, SupportProblem, intersection
 from ftr_align.polytope import (
     MAX_NODES,
     Face,
@@ -46,7 +46,7 @@ def test_plane_system_is_just_K_times_T():
     reduced normals are K T and nothing else -- this is why plotting in another
     basis needs no correction."""
     _, g = toy.MODELS["derate"]
-    T = free_basis(3, g.network.slack_idx)
+    T = free_basis(3, toy.NETWORK.slack_idx)
     M, c, rows = plane_system(g, T)
     assert np.allclose(M, g.K[rows] @ T)
     assert np.allclose(c, g.b[rows])
@@ -67,7 +67,7 @@ def test_polygon_vertices_are_feasible_and_tight(case):
     """Every vertex the outline returns is network-feasible and sits on at least
     two constraints -- which is what a vertex of a 2-D polytope is."""
     _, g = toy.MODELS[case]
-    T = free_basis(3, g.network.slack_idx)
+    T = free_basis(3, toy.NETWORK.slack_idx)
     M, c, _ = plane_system(g, T)
     V = polygon(g, T)
     assert len(V) >= 3
@@ -97,8 +97,8 @@ def test_a_uniform_derate_scales_the_polytope():
 
 
 @pytest.mark.parametrize("case", list(toy.MODELS))
-def test_meet_region_matches_the_nesting_of_the_pair(case):
-    """cor:canonical with the premise derived rather than tabulated: when one
+def test_intersection_region_matches_the_nesting_of_the_pair(case):
+    """prop:vanish with the premise derived rather than tabulated: when one
     model's limits dominate the other's, the intersection *is* the tighter
     region.
 
@@ -108,25 +108,25 @@ def test_meet_region_matches_the_nesting_of_the_pair(case):
     though the H-representations differ."""
     f, g = toy.MODELS[case]
     a_f, a_g = _area(polygon(f)), _area(polygon(g))
-    a_meet = _area(polygon(meet(f, g)))
+    a_int = _area(polygon(intersection(f, g)))
     match nesting(f, g):
         case "f":
-            assert a_meet == pytest.approx(a_f, rel=1e-9)
+            assert a_int == pytest.approx(a_f, rel=1e-9)
         case "g":
-            assert a_meet == pytest.approx(a_g, rel=1e-9)
+            assert a_int == pytest.approx(a_g, rel=1e-9)
         case _:
-            assert a_meet <= min(a_f, a_g) + 1e-6
+            assert a_int <= min(a_f, a_g) + 1e-6
 
 
-def test_a_crossing_pair_has_a_meet_smaller_than_both():
+def test_a_crossing_pair_has_a_intersection_smaller_than_both():
     """The pair that is NOT one-signed: each model is tighter on some row, so
-    neither limit vector dominates.  cor:canonical does not apply and block_table
+    neither limit vector dominates.  prop:vanish's nested case does not apply and block_table
     refuses the pair in either order -- but geometrically all that is guaranteed
     is Q(f ^ g) inside both, since a crossing row can be redundant."""
     _, f, g = find_case(lambda f, g: nesting(f, g) == "cross", what="a crossing pair")
-    a_f, a_g, a_meet = (_area(polygon(m)) for m in (f, g, meet(f, g)))
-    assert a_meet <= a_f + 1e-6
-    assert a_meet <= a_g + 1e-6
+    a_f, a_g, a_int = (_area(polygon(m)) for m in (f, g, intersection(f, g)))
+    assert a_int <= a_f + 1e-6
+    assert a_int <= a_g + 1e-6
 
 
 @pytest.mark.parametrize("case", list(toy.MODELS))
@@ -187,7 +187,7 @@ def test_faces_enumerate_every_realizable_active_set():
 # ---------------------------------------------------------------------------
 def test_is_bounded_detects_an_open_direction():
     _, g = toy.MODELS["derate"]
-    T = free_basis(3, g.network.slack_idx)
+    T = free_basis(3, toy.NETWORK.slack_idx)
     M, _, _ = plane_system(g, T)
     assert is_bounded(M)
     assert not is_bounded(M[:1])  # a single half-space bounds nothing

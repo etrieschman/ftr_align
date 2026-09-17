@@ -1,292 +1,232 @@
-# Validation plan
+# Validation
 
-Claims and their mechanisms live in `LEARNINGS.md`; measurements live in
-`notebooks/`. This file maps between them: which case shows which claim, with
-what instrument, and what is still open.
+What each case shows, and what is open. Engineering notes are in `CLAUDE.md`.
 
-Each rung shows something the rung below structurally cannot.
+**Notation** (journal draft). `Q^FTR`, `Q^DAM`, intersection `Q^∩` (rows of both,
+stacked). `v` a congestion direction. `U = h_FTR − h_∩`, `V = h_DAM − h_∩`. `J*`
+the priced set, `𝒮 = ker K̄_{J*}ᵀ` the shift space, `B` a block, `N_Q(q)` the
+normal cone of `Q` at `q`. Paper hooks cite TeX labels.
 
-| rung | role | what only it can do |
-|---|---|---|
-| **5-node** | attribution *structure* | blocks need ≥ 4 dimensions to be non-trivial |
-| **RTS-GMLC** | *frequency* | do these structures occur in a real network, how often |
-| **ERCOT** | *scale*, Assumption 1 | different PTDFs between the FTR and DAM models |
+| case | shows |
+|---|---|
+| 5-node (`notebooks/explore_texas5.py`) | attribution structure exists, and why |
+| RTS-GMLC | how often, at realized directions with real N-1 and bids |
+| ERCOT | scale, and the funding-gap decomposition on market data |
 
-**No 3-node rung.** The toy stays in the codebase and its tests still run — it
-reproduces results derived independently by hand, which is what makes the
-implementation trustworthy. That is code verification, not an argument the note
-makes, and its geometry can be drawn abstractly.
+The 3-node is the code oracle only: below 4 dimensions any three rows are
+dependent, so block structure reports the dimension, not the network.
 
 ---
 
-## 1. The 5-node: attribution structure
+## 1. 5-node: attribution structure
 
-### 1.1 Circulation, not co-pricing, is the criterion
+Cases are built by positing a binding pattern, which is positing `y`: every
+proposition but `prop:cr_support` holds at any `y ⪰ 0`, so no bids are needed.
+`solve_limit_design` makes the pattern bind and maximizes the margin at every
+other row, so `J*` equals the pattern. One limit vector carries several patterns;
+one limit per element across contingencies (`b[base,e] = b[c,e]`) makes every
+cross-contingency block topology rather than ratings.
 
-**Claim.** Rows are attributed together when a circulation links them, not when
-one certificate happens to price them.
+### 1.1 Types of attribution blocks
 
-Precisely: a **circuit** is a minimal dependent set of the stacked rows `K̄`, and
-a circuit whose rows all bind lies inside a single block (`LEARNINGS` §2). That
-is *sufficient*, not necessary. A **block** is a connected component of the
-matroid on `J*` — the transitive closure of "shares a circuit with" — so a block
-is in general a **union of overlapping circuits**, not one circuit. `two_blocks`
-below is the witness: corank 3 spread over 2 blocks means at least one block
-carries more than one independent circulation.
+Rows share a block because a circulation links them, not because one certificate
+prices them. The 5-node exhibits every type the paper names:
 
-Circuits of the stacked system coincide with graph cycles only in the base case.
-Across a contingency boundary there is no cycle behind them (§1.2).
-
-**Why this rung.** Below 4 dimensions block structure reports the dimension, not
-the network: a 3-bus balanced subspace is 2-D, so any three rows are dependent
-and a non-singleton block is forced rather than discovered. And a block among
-*parallel* elements — the only kind a small case reliably offers — dissolves
-under equivalent-circuit reduction.
-
-**Shown by** four binding patterns on one shared limit vector (`explore_texas5`,
-`PATTERN_ELEMENTS`), all base-case:
-
-| pattern | rows | priced | blocks | max block | `dim ker C` | shows |
+| type | pattern | rows | blocks | max block | `dim 𝒮` | shows |
 |---|---|---|---|---|---|---|
-| `parallel_wd` | WD1, WD2 | 2 | 1 | 2 | 1 | parallel elements: the degenerate block |
-| `no_loop` | WN, SH | 2 | **2** | **1** | **0** | priced together, no circulation, separately attributable |
-| `outer_loop` | WN, NH, SH, WS | 4 | 1 | 4 | 1 | one circulation binds four rows |
-| `two_blocks` | WN, ND, WD1, WD2, SD, DH, SH | 7 | 2 | 4 | 3 | two blocks on one certificate; a block ≠ a circuit |
+| parallel elements | `parallel_wd` | WD1, WD2 | 1 | 2 | 1 | a block that is a representation artifact: merge the pair and it is gone |
+| co-priced, independent | `no_loop` | WN, SH | **2** | **1** | **0** | priced together, separately attributable |
+| one circulation | `outer_loop` | WN, NH, SH, WS | 1 | 4 | 1 | a loop binds four rows into one block |
+| two blocks, one certificate | `two_blocks` | WN, ND, WD1, WD2, SD, DH, SH | 2 | 4 | 3 | a block is a union of overlapping circuits, not one circuit |
+| cross-contingency, LODF triple | `{base:o, base:e, c_o:e}` | 3 | 1 | 3 | 1 | the outage-transfer identity `k_e^{c_o} = k_e + L·k_o` is the circulation; no cycle in the graph behind it |
+| cross-contingency, spanning circuit | non-LODF, size 3–4 | — | 1 | 3–4 | 1 | same shape as the triple, different economics (1.2) |
 
-Structure is the claim; `h` depends on the design solved that run.
+Reading the columns: blocks partition `J*`, so `n_blocks = n_priced` is the fully
+identified case. Ambiguity is `dim 𝒮`, equivalently `max block > 1`. A block's
+corank is usually below `|B| − 1` (a 9-row block here has corank 5); per-block
+coranks sum to `dim 𝒮`.
 
-**`no_loop` is the result.** Two constraints priced by the same certificate,
-split into two singleton blocks with an empty trade space, because no circulation
-joins them. **Co-pricing is not a reason to aggregate.** Unreachable at 3 nodes:
-in 2-D two priced rows at a vertex already span the space.
+Hooks: `thm:blocks`(iii), the three bullets of §5.1, `fig_texas5_blocks`.
 
-**`parallel_wd` is why the rung exists.** A real block, but an artifact of
-representation — merge the parallel pair and it disappears. `outer_loop` cannot
-be merged away.
+### 1.2 Priced but costless
 
-### 1.2 Contingencies multiply dependencies without adding geometry
-
-**Claim.** A contingency adds rows to a space already saturated at rank `n − 1`,
-so every added row is a new dependency. Most of the resulting circulations mix
-base with post-outage rows: **cross-contingency blocks are generic**, and the
-base graph's cycle space cannot see any of them.
-
-**Why it matters.** Pure counting, so it transfers to RTS and ERCOT unchanged.
-This is the bridge to rung 2.
-
-**The count** (texas5: `E = 9`, `n = 5`, balanced dimension 4):
-
-| system | usable rows | rank | dependencies |
-|---|---|---|---|
-| base only | 9 | 4 | **5** |
-| base + one outage | 17 | 4 | **13** |
-
-The base's 5 is the graph cycle space `E − V + 1`, with KVL supplying the
-dependencies. One outage takes it to 13, of which only 5 are spanned by base-only
-cycles: **at least 8 dependency dimensions must involve post-contingency rows.**
-
-**Shown by** `circuits_for` over every outage, with `spans` counting circuits
-that touch both the base and a contingency.
-
-### 1.3 A block can be fully realized and still be worth nothing
-
-**Claim.** A cross-contingency block can bind exactly as designed — `J*` equal to
-the pattern, one block, `dim ker C = 1` — and contribute **zero** to `U`.
-Underfunding is a difference of support values, not a count of binding rows.
-
-**The criterion** (`LEARNINGS` §2), with `f` base-only and the circuit split into
-base rows `S_b` and contingency rows `S_c`:
+FTR enforces the base case, DAM adds one outage, and a circuit
+`S = S_b ∪ S_c` (base rows, post-outage rows) binds at the intersection. Then
 
 ```
 U = 0   ⟺   v ∈ cone{kᵢ : i ∈ S_b} + span{1}
 ```
 
-This is Farkas, so it is the condition rather than a proxy: `U > 0` needs a `Δq`
-with `kᵢᵀΔq ≤ 0` on the tight base rows and `vᵀΔq > 0`, and no such `Δq` exists
-exactly when `v` lies in their cone. Pinning a whole circuit forces `Σ dᵢbᵢ = 0`,
-which puts the contingency hyperplane through the corner the base rows already
-form — it touches `Q(f)` and slices off nothing.
+A post-outage row can bind, be priced, and cut nothing off `Q^FTR`: the
+dependence that puts it in a block also puts its hyperplane through the corner
+the base rows already form. This is Farkas, so it is the criterion, not a
+proxy. A proper subset of a circuit is independent, so the weights solving
+`v = K_{S_b}ᵀw + t·1` are unique: least squares, then read the residual (span)
+and the signs (cone). **Cone, not span.** A span test is blind to negative
+weights and calls live designs dead.
 
-**The sharp case.** The smallest cross-contingency circuit is the **LODF triple**
-`{base:o, base:e, c_o:e}`, whose dependence *is* the outage-transfer identity
-`k_e^{c_o} = k_e + L(e,o)·k_o`. Its weights are `w_e = 1 + s_c s_e ∈ {0,2}` and
-`w_o = 1 + s_c s_o L`, so the test reduces to `|L| ≤ 1` **independent of sides**:
-every LODF triple is worth zero to `U`. A single-loop network has `|LODF| = 1`
-identically, so a 3-node has no interior LODFs to show.
+In general, with `q∩` in the relative interior of the intersection's optimal
+face, `U = 0` iff `v` lies in the cone of the FTR rows priced by the intersection,
+and symmetrically for `V`. That is `cor:binding` in cone form, and the form the
+paper should state.
 
-**Shown by** two spanning circuits at the same designed limits — an LODF triple
-(in-cone, `U = 0`) beside a non-LODF spanning circuit (out-of-cone, `U > 0`).
-Same size, same `dim ker C`, both cross-contingency, both with `J*` equal to
-their pattern; only the economics differ. Over 1683 realizable spanning-circuit
-designs the criterion partitions `U` exactly, with no disagreements.
+- **Over 1,683 realizable spanning-circuit designs** the criterion partitions `U`
+  exactly: 1,141 out of cone, all `U > 0`; 542 in cone, all `U = 0`. The span test
+  is wrong on 173, 165 of them with one post-outage row.
+- **Every LODF triple is in cone.** With sides `s_o, s_e, s_c ∈ {±1}`,
+  `w_e = 1 + s_c s_e ∈ {0, 2}` and `w_o = 1 + s_c s_o L`, so the test is
+  `|L| ≤ 1` on every side assignment. `|L| > 1` is the near-radial case excluded
+  with bridges. All 70 triples × 8 sides pass; `|L| ∈ [0.043, 0.769]`.
+- **Escaping the cone is topology, not sides.** A spanning circuit can carry
+  `U > 0` only if it is not an LODF triple: of 133 non-LODF size-3 designs, 75
+  escape and 58 do not. No proxy is exact (`|S_c| ≥ 2` is the best, 976 of 1,009),
+  so run the test. The block need not be broken: out-of-cone designs realize `J*`
+  as one size-3 cross-contingency block with `dim 𝒮 = 1` and `U > 0` at once.
+- **Open: N-2.** An N-2 row `(o₁,o₂):e` combines base rows `e, o₁, o₂`, a
+  4-row analogue of the triple. Whether a bound like `|L| ≤ 1` keeps it in cone
+  decides if targeted N-2 coverage is priced but free, and is the N-2 selection
+  rule for the RTS pair (ii).
 
-### 1.4 Both failure modes at a meet vertex
+Hook: `cor:binding`.
 
-**Claim.** At a vertex `q*` of `Q(f∧g)` exposed by an interior direction `v`:
+### 1.3 Identification of block shares
 
-```
-U = 0  ⟺  v ∈ N_f(q*)          V = 0  ⟺  v ∈ N_g(q*)
-```
-
-and since `N_{f∧g}(q*) = N_f(q*) + N_g(q*)` for polyhedra,
-
-> both modes are strictly positive exactly when
-> `v ∈ (N_f + N_g) \ (N_f ∪ N_g)` — the direction needs generators from both
-> models and lies in neither cone alone.
-
-**Why it is generic.** The sum of two cones fills the wedge between them while
-the union is only the two cones. And the exposing direction is `Σ_{i tight} kᵢ`,
-a positive combination of every tight row, so it takes generators from both
-models by construction.
-
-**When it cancels.** Only at a vertex whose tight set belongs to one model alone.
-The other's normal cone is trivial, the sum collapses, `v` sits inside it, and
-that model's mode is exactly zero. A failure is a classification — an inherited
-vertex — not a statistic.
-
-**Shown by** `faces(f ∧ g)` plus `gap_summary` at each exposing direction: both
-modes live at 58 of 60. The prediction to check the sweep against is that the two
-exceptions have single-model tight sets.
-
-### 1.5 The sign of `U` is a feasibility test
-
-**Claim.** At a vertex `q*` of `Q(f)` with `v` interior to its normal cone:
-
-> **`U > 0` ⟺ `q* ∉ Q(g)`** — the FTR model's own optimal dispatch is not
-> DAM-feasible.
-
-**Why.** Interiority makes `q*` the unique `f`-maximizer, so `h(f;v) = vᵀq*`. If
-`q* ∈ Q(g)` then `q* ∈ Q(f∧g)` and `vᵀq* ≤ h(f∧g;v) ≤ h(f;v) = vᵀq*`, so `U = 0`.
-Otherwise the meet's maximizer is some other `q ∈ Q(f)`, and uniqueness forces
-`vᵀq < vᵀq*`, so `U > 0` strictly.
-
-**Consequences.** The sign of `U` costs a matrix-vector product rather than three
-support solves; the magnitude still needs one. The `U > 0` region of direction
-space is characterised — the union of normal cones of the `g`-infeasible vertices
-of `Q(f)` — rather than searched. Globally, `U > 0` for some direction iff
-`Q(f) ⊄ Q(g)`.
-
-**Open.** This suggests designing limits to target `U > 0` directly rather than
-positing a binding pattern and checking afterwards. Logged, not worked out.
-
-### 1.6 Where block attribution stops being a number
-
-**Claim.** Blocks are the unit at which attribution is well posed — settled
-elsewhere. What remains is the residual failure: even at block granularity, a
-block's *share* of a failure mode can be an interval rather than a value.
-
-**Why.** The share is read at a maximiser `q` of the target and is affine in it:
+A block's share is read at an intersection optimum `q∩` and is affine in it,
 
 ```
-share(B) = const − wᵀq ,     w = Σ_{i∈B} μᵢ kᵢ
+share(B) = Σ_{i∈B} μᵢ bᵢ − wᵀq∩ ,      w = Σ_{i∈B} μᵢ kᵢ ,
 ```
 
-so it is a number only when `wᵀq` is constant on the target's optimal face, i.e.
-`w ∈ span{1} + row(K_{J*(f∧g)})`. A vertex satisfies this vacuously. **Facet
-normals** are where it bites, because there the optimal face is
-positive-dimensional and `q` is a genuine choice.
+so it is one number iff `w ∈ span{1} + row(K̄∩_{J∩*})` and an interval otherwise
+(`thm:failure_blocks`(ii)). Vertices satisfy this vacuously; facet normals are
+where it bites, because there the optimal face has dimension `n − |S|` for the
+tight circuit `S` and `q∩` is a genuine choice.
 
-**The condition is model-symmetric.** Nothing in it privileges `U` or `V`; `w` is
-built from whichever model's certificate is in play. Which mode shows a failure
-is decided by which model is blind to the row the direction points along. On this
-pair that is always `f`, so every observed failure lands in `U`.
+- The span test (`primal_invariant`) and the two face LPs (`block_share_range`)
+  agree on all 88 blocks probed at facet normals. Widths separate by four orders
+  of magnitude (identified ≤ 5e-4, unidentified ≥ 8.6), so the span test alone
+  detects. The threshold must scale with `h`.
+- **Where it fails.** 28 of 88: 24 in `U` at facets of contingencies the FTR
+  model omits, and 4 in `V` at the `base:SH` facet, where the DAM has the row but
+  looser than the FTR's derated copy, so its certificate prices `base:SD` and
+  `DH:SH` instead. Rule to state: a share is unidentified where the direction
+  points along a row the intersection binds but the model does not price, either
+  because it lacks the row (coverage) or holds it looser (level). Symmetric in
+  the two models.
+- RTS witness (random 26-contingency pair, interval 5235): `U = 21.8` on the
+  parallel pair CA-1/CB-1, FTR lacking their mutual contingencies, each block's
+  share ranging over `[0, 21.8]`.
+- **Open.** `width / block value`: whether attribution degrades gracefully or
+  collapses when unidentified.
 
-**Shown by** 20 of 94 probed blocks failing, all in `U`, all at the normal of a
-contingency row `f` cannot price. Two independent computations agree on all 94:
-`primal_invariant` is a span test, `block_share_range` is two LPs over the same
-face.
+### 1.4 Both failure modes at once
 
-**The separation is economic, not numerical.** Identified widths top out at
-`6.7e-4`; unidentified ones start at `48.1`. So the multiplicity is real rather
-than a tolerance artifact — and the cheap span test is therefore sufficient as
-the detector, with the LPs corroborating rather than instrumenting.
+At any `q∩` attaining `h_∩(v)`, `U = 0 ⟺ v ∈ N_FTR(q∩)` and
+`V = 0 ⟺ v ∈ N_DAM(q∩)`, since a mode vanishes exactly when `q∩` is already
+optimal for that model. For polyhedra `N_∩(q∩) = N_FTR(q∩) + N_DAM(q∩)`, so
 
-**Open, for rung 2.** The failure may be small relative to what the block is
-worth, in which case attribution degrades gracefully rather than collapsing. The
-ratio `width / block value` is question 12 below, and it decides whether
-unidentified blocks are a caveat or a problem.
+> both modes are positive iff `v ∈ (N_FTR + N_DAM) \ (N_FTR ∪ N_DAM)`:
+> the direction needs generators from both models and lies in neither cone alone.
+
+This holds on every face of `Q^∩`, not only vertices. Vertices are where the
+cone is full-dimensional, so the set of such directions has positive measure,
+and where the regime map is complete: the vertices of `Q^∩`, each with one
+interior direction (`faces`), list every binding pattern the pair admits with
+no certificate posited. A realized DAM direction is never generic: `v = Kᵀy*`
+lies in the normal cone of the DAM face it exposes, at a facet normal when one
+row binds, so at realized directions `V = 0` iff that DAM optimal face meets
+`Q^FTR`, and `U = 0` iff some FTR maximizer is DAM-feasible (`prop:vanish`).
+
+- Current design: 88 vertices, 78 with both modes, 10 V-only, 0 U-only, with no
+  derate tuned. (The 3-node needed a hand-picked α to show both.)
+- The 10 exceptions should be vertices whose direction lies in `N_FTR` alone:
+  either a tight set from the FTR only, or DAM rows tight but inside the FTR
+  rows' cone (1.2). To check.
+- Scale: `~m^⌊(n−1)/2⌋` vertices for `m` facets. Contingencies grow `m`; buses
+  grow the exponent. Enumeration is for completeness at small `n`; at RTS the
+  sample is realized directions.
+
+Hook: §4, "a small set of special directions".
 
 ---
 
-## 2. RTS-GMLC: frequencies
+## 2. RTS-GMLC: how often
 
-Rung 1 says these structures exist and why. Rung 2 asks how often, on a 73-bus
-network with real N-1, heat-rate bids and limits. Several are *predictions*
-computable from `K` before they are measured.
+DAM baseline `D₀` = base at `Cont Rating` + N-1 at `LTE Rating`, one physical
+network. Runs end to end; `gap_summary` ~20 s, `block_table` with target ~8 s on
+a 26-contingency pair. Merging identical contingency rows in the intersection is
+the first speed lever.
 
-**Prerequisite.** RTS has a DAM instance but no FTR/DAM *model pair*. One must be
-defined — most naturally an FTR model enforcing a reduced contingency set —
-before anything below runs.
-
-| # | question | instrument | predicted by |
+| pair | FTR | DAM | expected |
 |---|---|---|---|
-| 1 | share of dependency dimensions involving contingency rows | rank counts on `K` | §1.2 |
-| 2 | circuit-size distribution; share spanning the contingency boundary | `circuits_for` | §1.2 |
-| 3 | how often attribution is ambiguous — `n_blocks` vs `n_priced` | `block_table` | §1.1 |
-| 4 | block-size and `dim ker C` distributions | `block_table` | §1.1 |
-| 5 | share of realized `J*` holding a cross-contingency block | `attribution_blocks` + `spans` | §1.2 |
-| 6 | of those, the share in-cone — **binding but unfunded** | cone test vs `U` | §1.3 |
-| 7 | LODF distribution, and mass near `\|L\| = 1` | PTDF rows | §1.3 |
-| 8 | how often both modes co-occur at *realized* directions | `gap_summary` over `clear_dam` | §1.4 (58/60 enumerated) |
-| 9 | how often block shares fail to identify | `primal_invariant`, `block_share_range` | §1.6 (20/94) |
-| 10 | floor-ratio distribution — a gauge, strictly inside `(0,1)`? | `gap_summary` floors | §3 of `LEARNINGS` |
-| 11 | merchandising surplus `= h(g;y*)` on a real clearing | `clear_dam` + `SupportProblem` | first realistic test of Prop 1 |
-| 12 | **`width / block value`** for unidentified blocks | `block_share_range` vs `value` | §1.6 — open |
+| (i) derate | `α · D₀` | `D₀` | `U = 0`, `V = (1 − α) h_DAM` exactly (`ex:derate`); sweep `α` |
+| (ii) targeted N-2 | `D₀` + selected `(o, e)` | `D₀` | `V` only; select `o` by `Perm OutRate × Duration`, `e` by priced frequency × `\|LODF\|` or by the cone test |
+| (iii) outage in DAM base | `D₀` | `(o,)` at Cont + `(o, e)` at LTE | both modes |
 
-**Sampling replaces enumeration, and asks the better question.** `faces` is
-intractable at `n = 73`, but realized directions from actual clearings are what
-matters economically — a market visits a small, structured subset of the normal
-fan. Rung 1's complete enumeration is what licenses the sampling design: it
-establishes that both modes coexist across essentially the whole regime space, so
-a frequency measured on realized directions estimates something real.
+If (ii)'s N-2 set contains the `o` realized in (iii), the FTR model anticipated
+the outage and `U` should shrink.
+
+| question | instrument | from |
+|---|---|---|
+| block-type census: `n_blocks` vs `n_priced`, block size, `dim 𝒮`, share of priced sets with a cross-contingency block | `block_table`, `attribution_blocks` | 1.1 |
+| of those, share in cone: priced but costless; LODF distribution and mass near `\|L\| = 1` | cone test vs `U`, PTDF | 1.2 |
+| share of blocks unidentified; `width / block value` | `block_table` | 1.3 |
+| co-occurrence of both modes at realized directions | `gap_summary` over `clear_dam` | 1.4 |
+| `U`, `V` by pair (i)–(iii); report card at representative intervals | `gap_summary`, `block_table` | `rem:reporting` |
 
 ---
 
-## 3. ERCOT: scale, and Assumption 1
+## 3. ERCOT: scale and the funding gap
 
-**Scale.** Everything above at production size. The levers are in place —
-`J_star` as one CLARABEL solve where only the support is needed, and candidate
-restriction plus a compiled Parameter-objective LP for the robust bounds. Dense
-`K` stays correct; the scale lever is active-set / column generation, not sparse
-storage.
+The CRR and DAM models are built separately and compared on shared nodes, so
+differing PTDFs are not a question. What ERCOT adds:
 
-**Assumption 1 breaks.** Everything above assumes the FTR and DAM models share
-PTDFs. ERCOT is the case where `K_f ≠ K_g`, and the code raises
-`NotImplementedError` there rather than returning a wrong number. Two things to
-establish:
-
-- **`f ∧ g` needs the stack.** The intersection is always the polytope of
-  `[K_f; K_g] q ⪯ [f; g]`. Under Assumption 1 that stack has identical row pairs
-  and collapses exactly to `min(fᵢ, gᵢ)` after `align`, which is why the
-  elementwise min is correct today.
-- **`v` was built to survive this.** Support is parametrised by the node-space
-  direction `v = Kᵀy*`, not a row-space certificate. Under `K_f ≠ K_g`, `v` is
-  still a node-space vector and both support problems stay well-posed, so values
-  and the gap need no alignment. Carrying `y` instead would not survive — it is
-  meaningless without the model that indexes it. This is an architectural claim
-  ERCOT can make good on, and the reason the extension is a fallback rather than
-  a rewrite.
+- **Scale.** Merge identical contingency rows; generate post-contingency rows
+  from base PTDF + LODF instead of storing them; constraint generation over a
+  working set. Per-contingency storage in `NetworkModel` is the seam.
+- **The decomposition on market data** (`thm:decomposition`). Auction
+  performance, temporal aggregation and `Σ Δ_t` over a contract period, each as
+  percentage points of the funding rate (`rem:monitor`); then `U_t`, `V_t` and
+  the report card at the intervals that drive the total.
+- **The uniform derate priced.** ERCOT's schedule is `ex:derate`, so
+  `V_t = (1 − α) h_DAM(v_t)` interval by interval: the hedge value the schedule
+  forgoes, measured.
+- **Market realism** (`rem:realism`): as-cleared limits under penalty pricing,
+  options in the settled portfolio, settlement-point node mapping. Each is a
+  data-handling decision to record.
+- **The certificate set.** ERCOT publishes shadow prices; where the dispatch is
+  degenerate they are one point of `Y_KKT`, and the direction set it induces is
+  the object the design section takes.
 
 ---
 
-## Register
+## 4. Ex-ante design
 
-✅ established · 🔨 instrument exists, not yet run · ⬜ open
+What §6 leans on, and the shape of the problem.
 
-| claim | rung | instrument | status |
-|---|---|---|---|
-| circulation, not co-pricing; four-pattern taxonomy | 5-node | `explore_texas5`, `block_table` | ✅ |
-| co-priced ≠ aggregable (`no_loop`) | 5-node | `explore_texas5` | ✅ |
-| contingencies multiply dependencies (§1.2 count) | 5-node | `circuits_for` + rank | ✅ |
-| binding ≠ funded; cone criterion; LODF triples | 5-node | `in_base_cone` vs `U` | ✅ 1683/1683 |
-| both modes at meet vertices; normal-cone sum | 5-node | `faces` + `gap_summary` | ✅ 58/60 |
-| inherited-vertex classification of the 2 exceptions | 5-node | tight-set inspection | 🔨 |
-| `U > 0` ⟺ `f`-vertex is `g`-infeasible | 5-node | `faces(f)` + feasibility | 🔨 |
-| block shares can fail; span test suffices to detect | 5-node | `primal_invariant` vs `block_share_range` | ✅ 0/94 disagree |
-| floor is a gauge, not a switch | 5-node | `gap_summary` floors | ✅ 56/60 interior |
-| block total invariant over the dual face | codebase (toy) | `test_block_total_is_face_invariant` | ✅ code-verified |
-| RTS FTR/DAM model pair | RTS | — | ⬜ prerequisite |
-| frequency battery (12 questions) | RTS | see §2 | ⬜ |
-| `width / block value` for unidentified blocks | RTS | `block_share_range` | ⬜ |
-| scale | ERCOT | — | ⬜ |
-| Assumption 1 / stack fallback | ERCOT | `meet` guard | ⬜ |
+- **Design space.** Coverage (which contingencies the FTR enforces) and levels
+  (`b` on shared rows). `c ∈ C_DAM \ C_FTR` or `b_FTR > b_DAM` feeds `U`;
+  `c ∈ C_FTR \ C_DAM` or `b_FTR < b_DAM` feeds `V`. A disagreement costs only
+  where the loser prices the row and `q∩` leaves it slack.
+- **Limit-free structure** (`prop:limit_free`). `h_FTR(b)(v) = min_{μ∈Λ(v)} bᵀμ`
+  is concave piecewise-linear in `b`; each certificate is a cut, exact on the
+  cell of `b`-space where its priced set persists, and its slack elsewhere is a
+  duality gap. A uniform derate never leaves its cell (same priced sets, blocks
+  and certificates; `V ∝ h_DAM`); a selective derate crosses cells and breaks
+  exactly the block it cuts. Coverage is screened before limits with the cone
+  test (1.2).
+- **The frontier.** Scenarios `(Q^DAM_ω, v_ω)`. Minimizing `Σ π_ω V_ω(b)` is one
+  LP in `(b, q_ω)`, since `h_∩(b)(v) = max{vᵀq : K^FTR q ≤ b, q ∈ Q^DAM}`.
+  `U_ω(b) ≤ τ` is exactly `∃ μ ∈ Λ^FTR(v_ω), q ∈ Q^DAM_ω : K^FTR q ≤ b,
+  bᵀμ − v_ωᵀq ≤ τ`, bilinear only in `bᵀμ`. Fix `μ` and it is an LP; fix `b`
+  and `μ` is a support solve. On the 5-node the regime map is a complete scenario
+  set, so the frontier there is exact and compares directly to the uniform
+  derate at equal exposure.
+- **Adequacy is linear within a cell.** At a vertex `q*(b)` of `Q^FTR(b)`,
+  `U > 0` on its cone iff `q* ∉ Q^DAM`; `q*(b)` is linear in `b` while its tight
+  set stays a vertex, so adequacy on the whole cone is a finite set of linear
+  inequalities in `b`. Over the regime map the adequate set is a union of
+  polyhedra, not convex.
+- **Open.** The certificate set `Y_KKT(g; ω)` and its worst case (`U` is a
+  difference of convex functions of `v`, so not at a vertex in general); the
+  N-2 cone check; convergence of the alternating scheme across cell boundaries.

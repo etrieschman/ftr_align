@@ -1,25 +1,24 @@
-"""Slice 3 oracle: trade space D(b;y) and attribution blocks.
+"""Slice 3 oracle: shift space S(v) and attribution blocks.
 
 The double-circuit variant (parallel SLa, SLb) is the smallest instance with a
 genuinely non-singleton optimal dual face: SLa and SLb have identical PTDF rows,
-so mu trades between them.  This exercises every new object -- robust ranges
-that don't collapse, a 1-D trade space, a size-2 block, and a face-invariant
+so mu shifts between them.  This exercises every new object -- robust ranges
+that don't collapse, a 1-D shift space, a size-2 block, and a face-invariant
 block total.
 """
 
 import numpy as np
 import pytest
 
-from ftr_align import SupportProblem, align, clear_dam, meet
-from ftr_align.attribution import repair_value
+from ftr_align import SupportProblem, clear_dam
 from ftr_align.duality import (
     J_star,
     attribution_blocks,
     block_totals,
     connected_blocks,
     robust_bounds,
-    trade_matrix,
-    trade_space,
+    shift_matrix,
+    shift_space,
 )
 from ftr_align.cases import toy
 
@@ -29,30 +28,12 @@ CLEAR = {"solver": "CLARABEL"}
 def _gap(f, g, scenario="(a)"):
     """Δ(f,g;y) = h(f;y) - h(g;y) and the DAM congestion direction."""
     d = clear_dam(g, toy.SCENARIOS[scenario], solver=CLEAR).direction
-    f_u, g_u = align(f, g)
-    delta = (SupportProblem(f_u, d).solve(solver=CLEAR).value
-             - SupportProblem(g_u, d).solve(solver=CLEAR).value)
+    delta = (SupportProblem(f, d).solve(solver=CLEAR).value
+             - SupportProblem(g, d).solve(solver=CLEAR).value)
     return delta, d
 
 
-def test_full_repair_recovers_the_whole_failure_mode():
-    """prop:repair_basic -- U^(full index) == U, for every case."""
-    from ftr_align import gap_summary
-
-    for case in toy.MODELS:
-        f, g = toy.MODELS[case]
-        _, d = _gap(f, g)
-        modes = gap_summary(f, g, d, solver=CLEAR)
-        every_row = np.arange(len(meet(f, g).b))
-        assert repair_value(f, meet(f, g), d, every_row, solver=CLEAR) == pytest.approx(
-            modes["U"], abs=1e-3
-        )
-        assert repair_value(g, meet(f, g), d, every_row, solver=CLEAR) == pytest.approx(
-            modes["V"], abs=1e-3
-        )
-
-
-def test_redundant_face_and_trade():
+def test_redundant_face_and_shift():
     sys = toy.REDUNDANT_MODELS["derate"][1]
     # the two parallel circuits are electrically identical
     assert np.allclose(sys.K[sys.rows_upper(None)[toy.SL]], sys.K[sys.rows_upper(None)[1]])
@@ -69,9 +50,9 @@ def test_redundant_face_and_trade():
     assert all(lo[i] == pytest.approx(0, abs=1e-3) for i in index)
     assert all(hi[i] > 1.0 for i in index)
 
-    # 1-D trade space, the (1, -1) weight shift between the twins
-    C = trade_matrix(prob, index)
-    D = trade_space(C)
+    # 1-D shift space, the (1, -1) weight shift between the twins
+    C = shift_matrix(prob, index)
+    D = shift_space(C)
     assert D.shape[1] == 1
     d = D[:, 0]
     assert abs(d[0]) == pytest.approx(abs(d[1]), rel=1e-6)
@@ -108,15 +89,15 @@ def test_block_total_is_face_invariant():
 
 
 def test_unique_dual_gives_singletons():
-    """When the dual is unique (standard toy), there are no trades and every
+    """When the dual is unique (standard toy), there are no shifts and every
     binding constraint is its own block."""
     _, g_model = toy.MODELS["derate"]
     dam = clear_dam(g_model, toy.SCENARIOS["(a)"], solver=CLEAR)
     prob = SupportProblem(g_model, dam.direction)
 
     index = J_star(prob)
-    C = trade_matrix(prob, index)
-    assert trade_space(C).shape[1] == 0          # no trades
+    C = shift_matrix(prob, index)
+    assert shift_space(C).shape[1] == 0          # no shifts
     assert all(len(g) == 1 for g in connected_blocks(C))  # all singletons
 
     blocks = attribution_blocks(prob, index=index)

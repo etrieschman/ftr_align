@@ -12,10 +12,7 @@ import numpy as np
 import polars as pl
 
 from .attribution import (
-    _nested_pair,
     block_share_range,
-    differences,
-    floor,
     primal_invariant,
     row_shares,
 )
@@ -23,13 +20,28 @@ from .duality import (
     J_star,
     attribution_blocks,
     block_totals,
-    trade_matrix,
-    trade_space,
+    shift_matrix,
+    shift_space,
 )
-from .network import NetworkModel, align, meet
+from .network import NetworkModel, intersection
 from .solve import CENTER, VERTEX, SupportProblem
 
 EPS = 1e-9
+
+_BLOCK_SCHEMA = {
+    "block": pl.Int64,
+    "members": pl.List(pl.Utf8),
+    "rows": pl.List(pl.Int64),
+    "size": pl.Int64,
+    "value": pl.Float64,
+    "dim_shift_space": pl.Int64,
+}
+_LOSS_SCHEMA = {
+    "loss": pl.Float64,
+    "loss_lo": pl.Float64,
+    "loss_hi": pl.Float64,
+    "identified": pl.Boolean,
+}
 
 
 def row_labels(model: NetworkModel, rows: Iterable[int]) -> list[str]:
@@ -58,12 +70,12 @@ def summary(
     aggregated, same arguments.
 
     Always: ``h`` and the shape of the attribution it admits (``n_priced``,
-    ``n_blocks``, ``max_block``, ``dim_trade_space``).  All singletons means
+    ``n_blocks``, ``max_block``, ``dim_shift_space``).  All singletons means
     attribution is effectively constraint-level; one large block means it is not
     identified there at all.
 
     With a ``target`` contained in ``model``: ``h_target`` and the failure mode
-    ``loss = h - h_target``, plus its ``floor`` and ``floor_ratio``.
+    ``loss = h - h_target``.
 
     A dict, so a sweep is ``pl.DataFrame([summary(...) for ...])``."""
     table = block_table(model, direction, target, solver=solver)
@@ -74,73 +86,58 @@ def summary(
         "n_priced": int(sizes.sum()),
         "n_blocks": table.height,
         "max_block": int(sizes.max()) if table.height else 0,
-        "dim_trade_space": int(table["dim_trade_space"].sum()),
+        "dim_shift_space": int(table["dim_shift_space"].sum()),
     }
     if target is None:
         return out
 
-    model_u, target_u = _nested_pair(model, target)
-    mu = SupportProblem(model_u, direction).solve(solver=CENTER).mu
     loss = float(table["loss"].sum())
-    value = floor(model_u, target_u, mu)
-    # "Zero" for a failure mode is below the noise of the subtraction that made
-    # it, not below EPS: it is a difference of support values of order 1e4.
-    zero = 1e-6 * max(1.0, abs(out["h"]))
-    return out | {
-        "h_target": out["h"] - loss,
-        "loss": loss,
-        "floor": value,
-        "floor_ratio": None if abs(loss) < zero else value / loss,
-    }
+    return out | {"h_target": out["h"] - loss, "loss": loss}
 
 
 def gap_summary(
-    f: NetworkModel,
-    g: NetworkModel,
+    ftr: NetworkModel,
+    dam: NetworkModel,
     direction: np.ndarray,
     labels: dict | None = None,
     solver=None,
 ) -> dict:
     """One flat record per ``(model pair, direction)``: both failure modes and
-    the gap, with each mode's floor and attribution shape.
+    the gap, with each mode's attribution shape.
 
-        U = h(f) - h(f^g)      value f loses on adopting the intersection
-        V = h(g) - h(f^g)      value g loses on adopting it
-        Delta = h(f) - h(g) = U - V
+        U     = h_ftr - h_int      what the FTR model loses on adopting the intersection
+        V     = h_dam - h_int      what the DAM model loses on adopting it
+        Delta = h_ftr - h_dam = U - V
 
     The pair-level composer, and the only thing reporting both modes at once: it
-    is :func:`summary` called against ``f ^ g`` from each side, suffixed ``_U``
-    and ``_V``, with one shared intersection solve so ``Delta = U - V`` is exact.
-    ``relative_gap`` is ``Delta / h(g)``."""
-    m = meet(f, g)
+    is :func:`summary` called against the intersection from each side, suffixed
+    ``_U`` and ``_V``, with one shared intersection solve so ``Delta = U - V`` is
+    exact.  ``relative_gap`` is ``Delta / h_dam``."""
+    both = intersection(ftr, dam)
     per = {
-        mode: summary(model, direction, m, solver=solver)
-        for mode, model in (("U", f), ("V", g))
+        mode: summary(model, direction, both, solver=solver)
+        for mode, model in (("U", ftr), ("V", dam))
     }
-    h_f, h_g = per["U"]["h"], per["V"]["h"]
+    h_ftr, h_dam = per["U"]["h"], per["V"]["h"]
     # One intersection solve for both modes.  Each `summary` computes its own,
     # and the two agree only to solver precision -- taking them separately would
     # leave `Delta = U - V` holding approximately rather than identically.
-    h_meet = SupportProblem(m, direction).solve(solver=CENTER).value
+    h_int = SupportProblem(both, direction).solve(solver=CENTER).value
 
     out = {
         **(labels or {}),
-        "h_f": h_f,
-        "h_g": h_g,
-        "h_meet": h_meet,
-        "U": h_f - h_meet,
-        "V": h_g - h_meet,
-        "Delta": h_f - h_g,
+        "h_ftr": h_ftr,
+        "h_dam": h_dam,
+        "h_int": h_int,
+        "U": h_ftr - h_int,
+        "V": h_dam - h_int,
+        "Delta": h_ftr - h_dam,
     }
-    out["relative_gap"] = None if abs(h_g) < EPS else out["Delta"] / h_g
+    out["relative_gap"] = None if abs(h_dam) < EPS else out["Delta"] / h_dam
     for mode, row in per.items():
         out |= {
-            f"floor_{mode}": row["floor"],
-            f"floor_ratio_{mode}": row["floor_ratio"],
-            **{
-                f"{k}_{mode}": row[k]
-                for k in ("n_priced", "n_blocks", "max_block", "dim_trade_space")
-            },
+            f"{k}_{mode}": row[k]
+            for k in ("n_priced", "n_blocks", "max_block", "dim_shift_space")
         }
     return out
 
@@ -155,8 +152,7 @@ def constraint_table(
     """One row per priced constraint -- :func:`block_table` without the grouping.
 
     Same shape and the same two attributions, at row granularity instead of block
-    granularity.  Restricted to rows in ``J*(b;y)`` plus, with a ``target``, the
-    rows on which the two models disagree.
+    granularity.  Restricted to the rows in ``J*(b;y)``.
 
     Always present, from ``model`` alone:
 
@@ -166,25 +162,14 @@ def constraint_table(
 
         loss  = mu_i [b_i - (K q)_i]    sums to h(model) - h(target)
 
-    plus ``target_limit`` and ``difference`` -- whether the row disagrees on a
-    *level* (both finite) or on *coverage* (one unmonitored).  Which failure mode
-    a disagreement feeds is which model you passed, not a property of the row, so
-    the kind is reported unsuffixed: a nested pair has ``b_model >= b_target``
-    everywhere, and the ``_U``/``_V`` names of :func:`attribution.differences`
-    cannot distinguish anything here.
-
-    ``priced`` is whether the row is in ``J*(b;y)``, and ``block`` is null exactly
-    where it is not: an unpriced row carries ``mu_i = 0``, contributes nothing to
-    ``h``, and so belongs to no block.  Such rows appear at all only because the
-    models disagree there.  Note ``priced`` is stronger than binding -- a row can
-    be tight at the primal optimum and still carry ``mu_i = 0``.
+    Only priced rows carry a share: an unpriced row has
+    ``mu_i = 0`` at every optimal certificate.  Note priced is stronger than
+    binding -- a row can be tight at the primal optimum and still carry
+    ``mu_i = 0``.
 
     Neither column is identified row by row where a block has more than one
     member; ``block`` says which rows those are, and :func:`block_table` is the
     honest unit.  ``mu`` is the raw stacked certificate, one row per side."""
-    if target is not None:
-        model, target = _nested_pair(model, target)
-
     problem = SupportProblem(model, direction)
     sol = problem.solve(solver=CENTER)
     blocks = attribution_blocks(problem, J_star(problem, sol))
@@ -197,25 +182,15 @@ def constraint_table(
             solver=solver, want_primal=True
         ).q
         share = row_shares(model, target, sol.mu, q_target)
-        kind = _by_row(
-            (name.rsplit("_", 1)[0], rows)
-            for name, rows in differences(model, target).items()
-        )
-        keep |= set(kind) | set(np.flatnonzero(np.abs(share) > EPS).tolist())
         for i in keep:
-            extra[i] = {
-                "target_limit": float(target.b[i]),
-                "difference": kind.get(i),
-                "loss": float(share[i]),
-            }
+            extra[i] = {"loss": float(share[i])}
 
     base = model.labels()
     out = pl.DataFrame(
         [
             {
                 **(labels or {}),
-                "priced": i in block_of,
-                "block": block_of.get(i),
+                "block": block_of[i],
                 "constraint": i,
                 "contingency": base["contingency"][i],
                 "element": base["element"][i],
@@ -228,22 +203,16 @@ def constraint_table(
             for i in sorted(map(int, keep))
         ]
     )
-    # `limit`, `target_limit` and `difference` are one statement and must be read
-    # together, so they sit adjacent: any gap between them is a column a wide
-    # table will truncate right where the comparison happens.
     order = [
         c
         for c in (
             *(labels or {}),
-            "priced",
             "block",
             "constraint",
             "contingency",
             "element",
             "side",
             "limit",
-            "target_limit",
-            "difference",
             "mu",
             "value",
             "loss",
@@ -277,13 +246,10 @@ def block_table(
     range as ``q`` moves over ``target``'s optimal face, and ``identified`` says
     whether that range is a point.
 
-    The failure mode is which model you pass first: ``(f, d, f^g)`` gives U,
-    ``(g, d, f^g)`` gives V.  ``labels`` adds constant columns.
+    The failure mode is which model you pass first: ``(ftr, v, intersection)``
+    gives U, ``(dam, v, intersection)`` gives V.  ``labels`` adds constant columns.
 
     One solve without a target, three with, whatever the block count."""
-    if target is not None:
-        model, target = _nested_pair(model, target)
-
     problem = SupportProblem(model, direction)
     sol = problem.solve(solver=CENTER)
     blocks = attribution_blocks(problem, J_star(problem, sol))
@@ -309,23 +275,29 @@ def block_table(
                 ),
             )
 
-    out = pl.DataFrame(
-        [
-            {
-                **(labels or {}),
-                "block": r,
-                "members": row_labels(model, rows),
-                "rows": [int(i) for i in rows],
-                "size": len(rows),
-                "value": float(W[r]),
-                "dim_trade_space": int(
-                    trade_space(trade_matrix(problem, rows)).shape[1]
-                ),
-                **slot,
-            }
-            for r, (rows, slot) in enumerate(zip(blocks, extra))
-        ]
-    )
+    records = [
+        {
+            **(labels or {}),
+            "block": r,
+            "members": row_labels(model, rows),
+            "rows": [int(i) for i in rows],
+            "size": len(rows),
+            "value": float(W[r]),
+            "dim_shift_space": int(shift_space(shift_matrix(problem, rows)).shape[1]),
+            **slot,
+        }
+        for r, (rows, slot) in enumerate(zip(blocks, extra))
+    ]
+    if records:
+        out = pl.DataFrame(records)
+    else:
+        # Nothing priced -- an uncongested interval.  Keep the columns so a sweep
+        # over intervals still stacks.
+        schema = _BLOCK_SCHEMA | (_LOSS_SCHEMA if target is not None else {})
+        out = pl.DataFrame(schema=schema).with_columns(
+            **{k: pl.lit(v) for k, v in (labels or {}).items()}
+        )
+        out = out.select(*(labels or {}), *schema)
 
     def _frac(column: str) -> pl.Expr:
         # "Zero" for a failure mode is below the noise of the subtraction that

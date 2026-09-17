@@ -10,7 +10,7 @@ from ftr_align import (
     SupportProblem,
     NetworkModel,
     Contingency,
-    meet,
+    intersection,
     with_limits,
 )
 from ftr_align.metrics import (
@@ -276,7 +276,7 @@ def circuits_for(model, outage, base_up, sizes=(2, 3)):
             out.append(
                 {
                     "outage": int(outage),
-                    "outage_name": str(model.network.element_names[outage]),
+                    "outage_name": str(net.element_names[outage]),
                     "rows": list(S),
                     "elements": row_labels(model, list(S)),
                     "z": z.tolist(),
@@ -398,7 +398,6 @@ display(
                 "margin": d["margin"],
                 "span_size": d["span"]["size"],
                 "base_size": d["base"]["size"],
-                "in_cone": d["in_cone"],
                 "span_pattern": row_labels(d["model"], d["patterns"]["span_block"]),
                 "base_pattern": row_labels(d["model"], d["patterns"]["base_block"]),
             }
@@ -439,21 +438,21 @@ ALPHA = 0.9
 b_base = design["b"][list(design_model.rows_upper(None))]
 b_cont = design["b"][list(design_model.rows_upper(design["outage"]))]
 
-f_model = NetworkModel.build(net, [Contingency(None, ALPHA * b_base)])
-g_model = NetworkModel.build(
+ftr_model = NetworkModel.build(net, [Contingency(None, ALPHA * b_base)])
+dam_model = NetworkModel.build(
     net, [Contingency(None, b_base), Contingency(design["outage"], b_cont)]
 )
-m_model = meet(f_model, g_model)
+int_model = intersection(ftr_model, dam_model)
 # The pattern's row indices are `design_model`'s, so they transfer to g only
-assert g_model.keys == design_model.keys
+assert dam_model.keys == design_model.keys
 
 
 def report(d, title):
     """gap_summary, both modes' blocks, and both constraint tables at one d."""
     print(f"\n~~~~~~ {title}")
-    display(pl.DataFrame(gap_summary(f_model, g_model, d, solver=CENTER)))
-    for mode, looser in (("U", f_model), ("V", g_model)):
-        table = block_table(looser, d, m_model, labels={"mode": mode})
+    display(pl.DataFrame(gap_summary(ftr_model, dam_model, d, solver=CENTER)))
+    for mode, looser in (("U", ftr_model), ("V", dam_model)):
+        table = block_table(looser, d, int_model, labels={"mode": mode})
         # The headline: a block carrying BOTH a `base:` label and an outage label
         # cannot be split between the base case and the outage.
         display(
@@ -467,17 +466,10 @@ def report(d, title):
                 )
             ).drop("rows")
         )
-    keep = (
-        pl.col("priced")
-        | (pl.col("difference") == "coverage")
-        | (pl.col("loss").abs() > 1e-6)
-    )
-    for mode, looser in (("U", f_model), ("V", g_model)):
+    for mode, looser in (("U", ftr_model), ("V", dam_model)):
         print(f"   constraints, {mode} side")
         display(
-            constraint_table(
-                looser, d, m_model, labels={"mode": mode}, solver=CENTER
-            ).filter(keep)
+            constraint_table(looser, d, int_model, labels={"mode": mode}, solver=CENTER)
         )
 
 
@@ -493,20 +485,20 @@ CANDIDATES = {
 
 overview = []
 for name, rows in CANDIDATES.items():
-    d = direction_of(g_model, rows)
-    gap = gap_summary(f_model, g_model, d, solver=CENTER)
+    d = direction_of(dam_model, rows)
+    gap = gap_summary(ftr_model, dam_model, d, solver=CENTER)
     binding = set(
-        np.flatnonzero(SupportProblem(g_model, d).solve(solver=CENTER).binding).tolist()
+        np.flatnonzero(SupportProblem(dam_model, d).solve(solver=CENTER).binding).tolist()
     )
-    zero = 1e-6 * max(1.0, abs(gap["h_g"]))
+    zero = 1e-6 * max(1.0, abs(gap["h_dam"]))
     overview.append(
         {
             "pattern": name,
-            "rows": row_labels(g_model, rows),
+            "rows": row_labels(dam_model, rows),
             # only the single patterns were designed; the union was not, so its
             # J* is not expected to match
             "realized_on_g": binding == set(rows),
-            **{k: gap[k] for k in ("h_f", "h_g", "h_meet", "U", "V", "Delta")},
+            **{k: gap[k] for k in ("h_ftr", "h_dam", "h_int", "U", "V", "Delta")},
             "both_modes": abs(gap["U"]) > zero and abs(gap["V"]) > zero,
         }
     )
@@ -516,25 +508,25 @@ display(overview.drop("rows"))
 display(overview.select("pattern", "rows"))
 
 for name, rows in CANDIDATES.items():
-    report(direction_of(g_model, rows), name)
+    report(direction_of(dam_model, rows), name)
 
 
 # %%
 # -------------------------------------
-# STEP 6: THE REGIME MAP -- SWEEP THE MEET'S VERTICES
+# STEP 6: THE REGIME MAP -- SWEEP THE INTERSECTION'S VERTICES
 # -------------------------------------
-# Faces of Q(b) and cones of its normal fan are dual: a vertex of the meet
+# Faces of Q(b) and cones of its normal fan are dual: a vertex of the intersection
 # corresponds to a full-dimensional cone of directions, and `faces` returns one
 # direction interior to each.  Sweeping those enumerates every regime the pair
 # can realize, with no y to posit and no design to run.
-regimes = faces(m_model)
-print(f"{len(regimes)} vertices of the meet, d = {n - 1}")
+regimes = faces(int_model)
+print(f"{len(regimes)} vertices of the intersection, d = {n - 1}")
 
 sweep = pl.DataFrame(
     [
         gap_summary(
-            f_model,
-            g_model,
+            ftr_model,
+            dam_model,
             face.direction,
             solver=CENTER,
             labels={"vertex": i, "n_tight": len(face.rows)},
@@ -547,14 +539,12 @@ display(
     sweep.select(
         "vertex",
         "n_tight",
-        "h_f",
-        "h_g",
-        "h_meet",
+        "h_ftr",
+        "h_dam",
+        "h_int",
         "U",
         "V",
         "Delta",
-        "floor_ratio_U",
-        "floor_ratio_V",
         "n_priced_U",
         "n_blocks_U",
         "n_priced_V",
@@ -564,7 +554,7 @@ display(
 
 # Both modes live at once?  U is coverage-only here and V level-only, so the
 # question is whether the outage rows bind at the same vertex the base rows do.
-zero = 1e-6 * sweep["h_g"].abs().max()
+zero = 1e-6 * sweep["h_dam"].abs().max()
 live = (pl.col("U").abs() > zero) & (pl.col("V").abs() > zero)
 display(
     sweep.select(
@@ -583,10 +573,10 @@ for mode in ("U", "V"):
             f"n_priced_{mode}",
             f"n_blocks_{mode}",
             f"max_block_{mode}",
-            f"dim_trade_space_{mode}",
+            f"dim_shift_space_{mode}",
         )
         .agg(pl.len(), pl.col(mode).mean().alias(f"mean_{mode}"))
-        .sort(f"dim_trade_space_{mode}", f"n_priced_{mode}", descending=True)
+        .sort(f"dim_shift_space_{mode}", f"n_priced_{mode}", descending=True)
     )
 
 
@@ -594,13 +584,13 @@ for mode in ("U", "V"):
 # -------------------------------------
 # THE SHOWCASE CELL: A VERTEX WHERE BOTH MODES ARE POSITIVE
 # -------------------------------------
-# The designed pattern directions give U = 0: f is base-only at ALPHA*b, and at
-# those directions only base rows bind for it, so h_f = h_meet.  The regime map
+# The designed pattern directions give U = 0: the FTR model is base-only at
+# ALPHA*b, and at those directions only base rows bind for it, so h_ftr = h_int.  The regime map
 # is where both modes are live -- take the vertex with the largest U.  The block
 # tables below carry `spans`, so you can read off whether it is also a
 # cross-contingency block.
 both_modes = sweep.filter(live).sort("U", descending=True)
-display(both_modes.select("vertex", "U", "V", "Delta", "floor_ratio_V", "n_blocks_V"))
+display(both_modes.select("vertex", "U", "V", "Delta", "n_blocks_V"))
 vertex = int(both_modes["vertex"][0])
 report(regimes[vertex].direction, f"vertex {vertex}")
 
@@ -609,27 +599,31 @@ report(regimes[vertex].direction, f"vertex {vertex}")
 # -------------------------------------
 # STEP 7: WHERE IS THE BLOCK SHARE NOT IDENTIFIED?
 # -------------------------------------
-# `identified` holds vacuously at a vertex: `span{1} + row(K_{J*(meet)})` is then
-# all of R^n and every w lies in it.  It has content only where the MEET's
+# `identified` holds vacuously at a vertex: `span{1} + row(K_{J*(intersection)})` is then
+# all of R^n and every w lies in it.  It has content only where the INTERSECTION's
 # optimal face is positive-dimensional, and the cheapest way to force that is to
 # point d along a single row's normal -- then that whole facet is optimal.
 probe = []
-for i in np.flatnonzero(np.isfinite(m_model.b)):
-    d = m_model.K[i]
+# The stacked intersection holds a row every model enforces once per model, so
+# probe each distinct normal once.
+active = np.flatnonzero(np.isfinite(int_model.b))
+_, first = np.unique(int_model.K[active].round(12), axis=0, return_index=True)
+for i in sorted(active[first]):
+    d = int_model.K[i]
     if np.abs(d).max() < 1e-9:  # the outaged element carries no flow
         continue
-    for mode, looser in (("U", f_model), ("V", g_model)):
-        for row in block_table(looser, d, m_model, solver=CENTER).iter_rows(named=True):
+    for mode, looser in (("U", ftr_model), ("V", dam_model)):
+        for row in block_table(looser, d, int_model, solver=CENTER).iter_rows(named=True):
             probe.append(
                 {
-                    "facet": row_labels(m_model, [i])[0],
+                    "facet": row_labels(int_model, [i])[0],
                     "mode": mode,
                     "members": row["members"],
                     "size": row["size"],
                     "loss": row["loss"],
                     "width": row["loss_hi"] - row["loss_lo"],
                     "identified": row["identified"],
-                    "dim_trade_space": row["dim_trade_space"],
+                    "dim_shift_space": row["dim_shift_space"],
                 }
             )
 
@@ -641,7 +635,7 @@ display(probe.filter(~pl.col("identified")))
 # they answer the same question and must agree.  The threshold has to scale with
 # the support values -- an identified block still shows a width of order the
 # face-construction leak, which is ~1e-3 at h ~ 1e3, not ~1e-6.
-leak = 1e-6 * max(1.0, abs(sweep["h_g"].abs().max()))
+leak = 1e-6 * max(1.0, abs(sweep["h_dam"].abs().max()))
 display(
     probe.select(
         rows=pl.len(),
@@ -656,7 +650,7 @@ display(
 
 # %%
 # -------------------------------------
-# LEARNINGS
+# FINDINGS (counts as of the run that wrote them; VALIDATION.md carries the refreshed ones)
 # -------------------------------------
 # 1. The trade constraint is implied, never imposed.  Pinning every row of a
 #    circuit S gives `sum z_i b_i = sum z_i (Kq)_i = (sum z_i k_i)^T q = 0`.  So
@@ -678,9 +672,9 @@ display(
 #    ratings.  It costs realism -- real post-contingency ratings are higher --
 #    and it costs margin, since pinning a base row now pins its twin.
 #
-# 5. `dim_trade_space` is the true corank, not `size - 1`.  A block of 9 rows on
+# 5. `dim_shift_space` is the true corank, not `size - 1`.  A block of 9 rows on
 #    this network has corank 5, not 8.  What does hold, and is the check worth
-#    running, is that the per-block dims sum to `dim ker C` over all of J*.
+#    running, is that the per-block dims sum to `dim S` over all of J*.
 #
 # 6. The combined direction is not a designed pattern.  `d = K^T(1_span+1_base)`
 #    exposes a face that is neither, and the spanning block disappears there.
@@ -689,19 +683,12 @@ display(
 #    94 probed blocks fail primal invariance, every one of them in U and every
 #    one at the normal of a CONTINGENCY row.  The mechanism: f is base-only, so
 #    at `d = k_i` for an outage row f cannot price that row at all, and its block
-#    weight `sum mu_i k_i` falls outside `span{1} + row(K_{J*(meet)})`.  V never
+#    weight `sum mu_i k_i` falls outside `span{1} + row(K_{J*(intersection)})`.  V never
 #    fails, because g does contain the row.  The two tests agree perfectly: 0 of
 #    94 blocks disagree, with identified widths topping out at 6.7e-4 and
 #    unidentified widths starting at 48.1 -- five orders of magnitude apart, so
 #    this is real multiplicity and `primal_invariant` and `block_share_range`
 #    validate each other.
-#
-# 8. The floor is a gauge here, not a switch.  `floor_ratio_V` is strictly
-#    inside (0.396, 1) at 56 of 60 vertices and exactly 1 at only 4.  The old
-#    binary reading assumed the derate covers every priced row; it does not --
-#    V's certificate also prices outage rows, where f and g agree and the floor
-#    collects nothing.  `floor_ratio_U` is 0.0 at all 58 vertices where U is
-#    nonzero, a pure coverage difference as designed.
 #
 # 9. Both modes live at 58 of the 60 vertices, without tuning ALPHA.  The regime
 #    map answers "does this pair exhibit both failure modes" by enumeration,

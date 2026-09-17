@@ -4,8 +4,8 @@ Layered so that each level only depends on the ones below it:
 
 * ``network``     -- geometry: incidence ``A``, PTDF ``H``, stacked ``K``, models
 * ``solve``       -- the support LP and DAM clearing
-* ``duality``     -- dual face, primal face, trade space, attribution blocks
-* ``attribution`` -- failure modes, repairs, floor/ceiling, block shares
+* ``duality``     -- dual face, primal face, shift space, attribution blocks
+* ``attribution`` -- row and block shares of a failure mode
 * ``polytope``    -- the V-representation: vertices, active sets, directions
 * ``metrics``     -- the only layer that labels rows and emits tables
 * ``viz``         -- 3-node figures, one layer per call
@@ -18,21 +18,21 @@ hold in your head.
 
 A typical session::
 
-    f, g = toy.MODELS["mixed"]                     # an (FTR, DAM) pair
-    d = clear_dam(g, scenario).direction           # y*, and d = K^T y*
-    gap_summary(f, g, d)                           # Delta, U, V, floors  (a dict)
-    block_table(g, d, meet(f, g))                  # per block: W and U_B
-    constraint_table(f, g, d, mode="V")            # per constraint, underneath
+    ftr, dam = toy.MODELS["mixed"]                 # an (FTR, DAM) pair
+    v = clear_dam(dam, scenario).direction         # y*, and v = K^T y*
+    gap_summary(ftr, dam, v)                       # Delta, U, V, block shape  (a dict)
+    block_table(dam, v, intersection(ftr, dam))    # per block: W_B and V_B
+    constraint_table(dam, v, intersection(ftr, dam))  # per constraint, underneath
 """
 
 # -- set a problem up ---------------------------------------------------------
 from .network import (
     Contingency,
+    ContingencyRows,
     NetworkModel,
     PhysicalNetwork,
-    align,
+    intersection,
     is_connected,
-    meet,
     with_limits,
 )
 
@@ -40,7 +40,6 @@ from .network import (
 from .solve import CENTER, VERTEX, DamInstance, DamResult, SupportProblem, clear_dam
 
 # -- the quantities -----------------------------------------------------------
-from .attribution import ceiling, differences, floor, repair_value
 from .duality import J_star, attribution_blocks, robust_bounds
 from .polytope import faces, polygon
 
@@ -50,11 +49,11 @@ from .metrics import block_table, constraint_table, gap_summary, summary
 __all__ = [
     # set up
     "Contingency",
+    "ContingencyRows",
     "NetworkModel",
     "PhysicalNetwork",
-    "align",
+    "intersection",
     "is_connected",
-    "meet",
     "with_limits",
     # solve
     "CENTER",
@@ -66,12 +65,8 @@ __all__ = [
     # quantities
     "J_star",
     "attribution_blocks",
-    "differences",
-    "ceiling",
     "faces",
-    "floor",
     "polygon",
-    "repair_value",
     "robust_bounds",
     # tables
     "block_table",

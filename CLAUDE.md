@@ -11,73 +11,80 @@ rewriting per network.
 
 | symbol | meaning | code |
 |---|---|---|
-| `f` | **FTR/SFT** network model (limit vector) | first of a model pair |
-| `g` | **DAM** network model | second of a model pair |
-| `Δ(f,g;y)` | `h(f;y) − h(g;y)`; `>0` underfunding exposure, `<0` lost hedge value | — |
+| `Q^FTR` | **FTR/SFT** network model `(K^FTR, b^FTR)` | `ftr`, first of a model pair |
+| `Q^DAM` | **DAM** network model `(K^DAM, b^DAM)` | `dam`, second of a model pair |
+| `Q^∩` | intersection model: rows of both, stacked | `intersection(ftr, dam)` |
+| `Δ(v)` | `h_FTR(v) − h_DAM(v)`; `>0` underfunding exposure, `<0` lost hedge value | `Delta` |
 | `U`, `V` | failure modes; computed **only** in `metrics.gap_summary` | `gap_summary` |
-| `A` | node-branch incidence | `PhysicalNetwork.A` |
-| `H_c`, `H` | PTDF under `c`; stacked over contingencies | `.ptdf(key)`, `NetworkModel.H` |
+| `A` | node-branch incidence (builder input only) | `PhysicalNetwork.A` |
+| `H_c`, `H` | PTDF under `c`; stacked over contingencies | `ContingencyRows.H`, `NetworkModel.H` |
 | `K = [H; −H]` | stacked constraint matrix | `NetworkModel.K` |
 | `y`, `v = Kᵀy` | price certificate; node-space direction | `DamResult.y`, `.direction` |
 | `Λ(y)`, `Λ*(b;y)` | dual-feasible set, optimal dual face | `Lambda`, `Lambda_star` |
-| `J*(b;y)` | dual-optimal support | `J_star` (one CLARABEL solve) |
-| `D(b;y) = ker C(b;y)` | trade space | `trade_space`, `trade_matrix` |
-| `d` | a redistribution *within* a block (an element of `D`) | the null vector in `circuits_for` |
-| `W_{J_r}` | block total | `block_totals`; column `value` |
+| `J*(v)` | priced set (dual-optimal support) | `J_star` (one CLARABEL solve) |
+| `𝒮(v) = ker K̄_{J*}ᵀ` | shift space | `shift_space`, `shift_matrix` |
+| `σ` | a shift *within* a block (an element of `𝒮`) | the null vector in `circuits_for` |
+| `d` | an arbitrary direction (`v` is a realized one) | `direction` |
+| `W_B` | block total | `block_totals`; column `value` |
 | `U_B` | block's share of a failure mode | column `loss` (**not** `U_B` — see below) |
-| `f ∧ g` | intersection model | `meet` |
-| `U`, `V` | failure modes | `failure_modes` |
-| `U^(S)` | repair value | `repair_value` |
 
-**Letters:** `v` is the direction (`v = Kᵀy`); `d` is a redistribution within an
-attribution block. Code spells both as words (`direction`, the null vector in
-`circuits_for`), so this is a prose convention.
+**Letters:** `v` is a realized congestion direction (`v = Kᵀy`), `d` an arbitrary
+one; `σ` is a shift within an attribution block. Code spells these as words
+(`direction`, the null vector in `circuits_for`), so this is a prose convention.
+The paper no longer writes models as `f`/`g`: code names them `ftr`/`dam`, and
+columns `h_ftr`/`h_dam`/`h_int`.  (Old 3-node tests still use local `f, g`.)
 
 **Naming convention:** capitalized functions (`Lambda`, `Lambda_star`) are
 *assembly* — they return cvxpy constraint lists and never solve; lowercase
-functions solve. Model pairs are always ordered `(f, g)`, matching `Δ(f,g;y)`;
+functions solve. Model pairs are always ordered `(ftr, dam)`, matching `Δ`;
 `MODELS[...]` and `REDUNDANT_MODELS[...]` follow this.
 
 ## Locked design decisions (do not relitigate — settled over a long planning pass)
 
-- **One network solve is the primitive**, not a DAM-vs-FTR pair. A `NetworkModel`
-  owns its geometry: a `PhysicalNetwork` + a tuple of `Contingency` (each carrying
-  the line limits enforced under it). `NetworkModel.build(net, contingencies)`
-  assembles `K = [H; −H]` and the stacked limit vector `b`. There is **no separate
-  `StackedSystem`** — it was folded into `NetworkModel`.
+- **A network model is constraint rows `(K, b)` on a node set** — nothing more.
+  `NetworkModel(nodes, contingencies)` stores one `ContingencyRows` per
+  contingency (its PTDF rows `H_c`, element labels, upper/lower limits); `H`,
+  `K = [H; −H]` and `b = [upper; lower]` are assembled on first use
+  (`cached_property`). The physical network is a *builder*
+  (`NetworkModel.build(net, [Contingency, ...])`), not part of the model, so two
+  models built on different networks (elements, shift factors, reference bus) are
+  comparable whenever they share `nodes`. Rows are kept per contingency for
+  scale: an intersection shares its parents' arrays, and this is the seam where
+  rows will later be generated (LODF) or screened per contingency instead of
+  materialising a dense `K`. Every consumer touches `K` only as `K`, `K[rows]`,
+  `K @ q` or `Kᵀμ`; keep it that way.
 - **Support is parametrized by a node-space direction `v ∈ Rⁿ`**, not a row-space
   certificate. `SupportProblem(model, direction)`; `h(b;y) = max_{q∈Q(b)} vᵀq`.
-  Every downstream object — `Λ`, `Λ*`, `J*`, blocks, floor, ceiling — depends on
+  Every downstream object — `Λ`, `Λ*`, `J*`, blocks, block shares — depends on
   `y` **only** through `v = Kᵀy`, so `v` is what the code carries and the memos'
   `(b;y)` notation describes the same thing with the redundant fibre quotiented
-  out. Because `v` lives in node space (shared by every model on the network),
+  out. Because `v` lives in node space (shared by every model on the nodes),
   support **values and the gap need NO alignment** — each model solves on its own
   polytope with the same `v`. `clear_dam` returns the DAM certificate `y*` (over
   its own rows) **and** `direction = Kᵀ y*`.
-  This survives Assumption 1 breaking: under `K_f ≠ K_g`, `v = K_gᵀy*` is still a
-  node-space vector and both support problems are still well-posed. Passing `y`
+  This survives different PTDFs: under `K^FTR ≠ K^DAM`, `v = (K^DAM)ᵀy*` is
+  still a node-space vector and both support problems are still well-posed. Passing `y`
   instead would *not* survive — it is meaningless without the model that indexes
   it. **Do not "carry `y` for later"; `v` is the interface that lasts.**
-- **`align` puts two models on a common row index**, rebuilding both onto a union
-  contingency set (unenforced contingencies added with `+inf` limits). Used for
-  row-level cross-model comparison (lining up `μ_f`/`μ_g`, `differences`, joint
-  blocks) and — legitimately — as model-level preprocessing for the intersection
-  `f ∧ g`, which needs a common index by construction. Never needed before a plain
-  support solve. Every comparative quantity aligns first, which is why `embed`
-  was deleted: `μ` comes out on the common index natively. Valid only under
-  **Assumption 1 (common PTDFs)**; ERCOT's different-PTDF case is flagged,
-  separate, not yet handled.
-- **`f ∧ g` is an intersection, not an elementwise min.** `Q(f) ∩ Q(g)` is always
-  the polytope of `[K_f; K_g] q ⪯ [f; g]`. Under Assumption 1 that stack has
-  identical row pairs and collapses *exactly* to `min(f_i, g_i)` after `align` —
-  no row growth, no tolerance — which is why the min is the correct
-  implementation today. Keep the name and semantics general so the stack fallback
-  can fill in for ERCOT without a rewrite.
+- **The intersection is the stack** (`intersection(*models)`): the rows of every
+  model concatenated, `K^∩ = [K^FTR; K^DAM]`, `b^∩ = [b^FTR; b^DAM]` up to row
+  order. The only requirement is equal `nodes`. No alignment, no dedupe, no
+  common-PTDF assumption. A contingency both models enforce appears twice and the
+  tighter copy binds (duplicate rows cost CLARABEL a few digits, ~1e-8 relative —
+  compare at `1e-6 · max|h|`). `align`, `meet` and the elementwise min are gone.
+- **Attribution needs no common row index.** A nested pair `(model, target)` uses
+  `μ` on the model's own rows and `q_target` as a node-space vector; the target
+  enters only through its own solve (`q`, `J*`, face LPs). The one precondition,
+  checked in `row_shares`, is that `q_target` is feasible for `model` — exactly
+  what makes every share `μ_i[b_i − k_iᵀq]` nonnegative (prop:exact_split).
 - `b` and per-row vectors (`μ`) are **co-indexed full-length vectors** over the
   model's rows. Unmonitored rows: `b = +inf`, `μ` pinned to 0.
   `active = np.isfinite(b)`.
 - `SupportProblem` is **dual-form** (`min bᵀμ s.t. Kᵀμ + 1s = d, μ ≥ 0`) so the
-  multipliers `μ` are variables. `.data` is a typed numpy bundle (`SupportData`:
+  multipliers `μ` are variables. `want_primal=True` reads `q` off the same solve,
+  `q = −(multiplier on Kᵀμ + 1s = d)`: from CLARABEL it is the analytic centre of
+  the primal optimal face, from HiGHS a vertex. There is no separate primal LP —
+  CLARABEL failed outright on the primal at RTS scale. `.data` is a typed numpy bundle (`SupportData`:
   `K, b, direction` → `active` property). `.solve()` returns an immutable
   `SupportSolution` value.
 - **`μ` stays stacked-nonneg**, never signed. `μ ⪰ 0` is what makes `Λ(y)` a cone
@@ -126,13 +133,14 @@ private but because a flat namespace of seventy names is not an API you can hold
 in your head. A typical session:
 
 ```python
-f, g = toy.MODELS["mixed"]                # an (FTR, DAM) pair
-v = clear_dam(g, scenario).direction      # y*, and v = K^T y*
-summary(g, v)                             # one model: h + attribution shape
-summary(g, v, meet(f, g))                 # + one mode: loss, floor
-gap_summary(f, g, v)                      # both modes: Delta, U, V, floors
-block_table(g, v, meet(f, g))             # per block:      value and loss
-constraint_table(g, v, meet(f, g))        # per constraint: value and loss
+ftr, dam = toy.MODELS["mixed"]            # an (FTR, DAM) pair
+v = clear_dam(dam, scenario).direction    # y*, and v = K^T y*
+both = intersection(ftr, dam)             # the rows of both, stacked
+summary(dam, v)                           # one model: h + attribution shape
+summary(dam, v, both)                     # + one mode: loss
+gap_summary(ftr, dam, v)                  # both modes: Delta, U, V, block shape
+block_table(dam, v, both)                 # per block:      value and loss
+constraint_table(dam, v, both)            # per constraint: value and loss
 ```
 
 ## Layout
@@ -148,10 +156,11 @@ the memos' propositions directly, with no table in between.
 ftr_align/
   network.py    PTDF (compute_ptdf takes incidence `A` + optional per-element
                 `tap`), is_connected (bridge/islanding guard), PhysicalNetwork
-                (owns `A`, optional `tap`), Contingency (key + limits; pass one
-                `upper` for symmetric), NetworkModel (owns K & b; `.H` is the
-                stacked PTDF, the upper half of K), align, meet (f ^ g),
-                with_limits, contingency_label/element_label
+                (owns `A`, optional `tap`; a builder input), Contingency (key +
+                limits; the builder's input), ContingencyRows (one contingency's
+                H_c + labels + limits), NetworkModel (nodes + ContingencyRows;
+                H, K, b assembled lazily; rows_upper/rows_lower by key, labels()),
+                intersection (the stack), with_limits (new b, H shared)
   solve.py      assembly fns (Lambda / Lambda_star / network_constraints),
                 SupportData, SupportProblem, solve_support_cvxpy,
                 SupportSolution, DamInstance, DamResult, clear_dam (returns y*
@@ -163,25 +172,21 @@ ftr_align/
                 base solve's engine; bounds are solver-invariant), J_star
                 (J*(b;y) from one CLARABEL solve via strict complementarity --
                 CLARABEL required, ~50-130x cheaper than the face-LP loop),
-                primal_face_range + face_leak, in_span, trade_matrix,
-                trade_space (D=ker C), connected_blocks (matroid components via
-                QR fundamental circuits), attribution_blocks (row indices per
-                block), block_totals (W_{J_r})
+                primal_face_range + face_leak, in_span, shift_matrix (Kbar_J^T,
+                no limit row -- prop:kernel), shift_space (S = ker Kbar_J^T),
+                connected_blocks (matroid components via QR fundamental
+                circuits), attribution_blocks (row indices per block),
+                block_totals (W_B)
   attribution.py  EVERY attributive fn takes a NESTED PAIR `(model, target)`
-                -- what `model` loses on adopting `target` -- NOT `(f, g, mode)`.
-                U is `(f, f^g)`, V is `(g, f^g)`; the mode IS the first argument,
-                so the "attribute on the loser's blocks" rule is structural and
-                unstatable wrongly.  `_nested_pair` aligns + enforces
-                `Q(target) <= Q(model)` (raises on a crossing pair; a crossing
-                pair gives a meaningless number, not a wrong one).  Any nested
-                pair works, incl. a partially-repaired model.
-                failure_modes (U/V/Delta -- still `(f, g)`, it computes both),
-                repaired + repair_value (U^(S)), floor, ceiling, row_shares
-                (cor:exact_split as a co-indexed vector -- `.sum()` is the
-                failure mode, `[rows].sum()` is a block share), block_shares
-                (prop:block_underfunding), primal_invariant +
-                block_share_range, differences (level/coverage x U/V per
-                prop:kinds)
+                -- what `model` loses on adopting `target` -- NOT `(ftr, dam, mode)`.
+                U is `(ftr, intersection)`, V is `(dam, intersection)`; the mode
+                IS the first argument, so the "attribute on the loser's blocks"
+                rule is structural.  No common row index: mu is on the model's
+                rows, q_target is node-space.  row_shares (prop:exact_split as a
+                co-indexed vector -- `.sum()` is the failure mode, `[rows].sum()`
+                a block share; raises if q_target is infeasible for `model`,
+                which is how a crossing pair is refused), primal_invariant +
+                block_share_range (thm:failure_blocks (ii))
   polytope.py   the V-representation of Q(b): free_basis / plane_system (a
                 basis T with 1^T T = 0; reduced normals are just K T),
                 polygon (exact 2-D outline by pairwise intersection -- no
@@ -197,23 +202,20 @@ ftr_align/
   metrics.py    row_labels, gap_summary (one flat record per (model pair,
                 direction) cell), constraint_table (per-constraint detail),
                 summary (one model at one direction; target optional),
-                block_table.  `constraint_table`'s `difference`
-                column is UNSUFFIXED (`level` / `coverage`): a nested pair has
-                `b_model >= b_target` everywhere, so the `_U`/`_V` names of
-                `differences` cannot distinguish anything there, and which mode a
-                row feeds is which model you passed.  All four share ONE signature
+                block_table.  All four share ONE signature
                 shape `(model, d, target=None)`: no target -> the support attribution
                 (`value`), with one -> the misalignment attribution (`loss`).
                 `target` needs only to be CONTAINED in `model`, not to be the
-                meet.  `gap_summary` is the exception -- a pair-level composer
+                intersection.  `gap_summary(ftr, dam, v)` is the exception -- a pair-level composer
                 calling `summary` from each side with one shared intersection
-                solve, so `Delta = U - V` is exact.  Paper-shaped tables are NOT here -- Tables II & III
+                solve, so `Delta = U - V` is exact; keys h_ftr/h_dam/h_int.
+                Paper-shaped tables are NOT here -- Tables II & III
                 and their `net_dual` collapse live in
                 notebooks/reproduce_conference.py
   cases/toy.py  3-node oracle: fixed data (NETWORK, REDUNDANT_NETWORK, limits,
                 bid matrices) + the paper's cases as constants: SCENARIOS (label
                 -> DamInstance, via dam_instance(q_dem, max_gen)), MODELS (label
-                -> (f, g) pair == (FTR, DAM), built from Contingency lists),
+                -> (ftr, dam) pair, built from Contingency lists),
                 REDUNDANT_MODELS (double-circuit variant).  No builder fn --
                 models are assembled inline with NetworkModel.build.
   cases/texas5.py  5-node of the attribution memo (fig_texas5): parallel WD
@@ -247,8 +249,10 @@ notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
                 figures are one per *case* (a scenario changes only the
                 direction, which nothing else draws); figures_toy stays the one
                 that writes the PNGs, optima and all
-tests/          oracle tests: Tables II & III, strong duality, blocks, align;
-                test_primitives (meet / primal_face_range / in_span);
+tests/          oracle tests: Tables II & III, strong duality, blocks;
+                test_network (rows, with_limits, intersection == old min-model
+                on one network, across networks, node-set guard);
+                test_primitives (intersection / primal_face_range / in_span);
                 test_attribution (T0 plumbing -- every memo invariant, over all
                 4 cases x 3 scenarios x both modes);
                 test_rts_gmlc (loader invariants + end-to-end, skips if offline)
@@ -257,12 +261,35 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 (jupytext `# %%`). Planned: `scenarios.py` (`build_dam_instance` = inverse of
 `clear_dam`, a tested roundtrip), `analysis/` (alignment, viz_toy, viz_large).
 
-## Status (2026-08-19): notation aligned to the journal draft, 370 tests pass
+## Status (2026-09-16): a model is `(K, b)`; intersection is the stack; 293 tests pass
+
+- **Model refactor.** `NetworkModel` is `nodes` + per-contingency
+  `ContingencyRows`; `intersection` stacks; attribution uses no common row index.
+  `align`, `meet`, `_nested_pair` and `constraint_table`'s `target_limit` column
+  are gone. Checked: `test_network` shows the stack equals the old
+  elementwise-min model on every toy case × scenario, and that an intersection
+  across *different* physical networks (toy × its double-circuit twin) works.
+- **Renamed to the journal draft:** trade space `D = ker C` → shift space
+  `𝒮 = ker K̄_{J*}ᵀ` (`shift_matrix`, `shift_space`, column `dim_shift_space`);
+  `shift_matrix` no longer carries the limit row (prop:kernel makes it
+  redundant on `J*`). `gap_summary(ftr, dam, v)` with `h_ftr`/`h_dam`/`h_int`.
+- **RTS attribution now runs end to end.** Two pre-existing blockers fixed:
+  CLARABEL's separate primal solve failed on every RTS model (now `q` comes from
+  the dual solve), and `block_table` crashed on an uncongested direction (now an
+  empty frame with its columns). Cost on the 26-contingency random pair:
+  `gap_summary` ~20 s, `block_table` with target ~8 s; the stacked intersection
+  doubles a solve (full N-1: 5 s → 10 s), so merging identical contingency rows
+  in `intersection` is the first speed lever if sweeps need it.
+- **Dropped, no longer in the paper:** `floor`/`floor_ratio`, `ceiling`,
+  `repair_value`/`repaired`, `differences` (and `constraint_table`'s `priced`
+  and `difference` columns).
+
+### Earlier (2026-08-19): notation aligned to the journal draft
 
 - Table II (`MS_DAM`, `Δ`, `η`) and Table III (`μ_f`, `μ_g`) reproduced exactly.
 - Robust `μ` bounds + binding/degenerate/slack classification.
-- Trade space `D(b;y) = ker C` + matroid-connectivity attribution blocks with
-  face-invariant block totals `W_{J_r}`. Validated on the redundant variant
+- Shift space (then "trade space `D = ker C`") + matroid-connectivity attribution
+  blocks with face-invariant block totals `W_B`. Validated on the redundant variant
   (parallel `SLa`/`SLb`, reactance 2 each → combined 1, limit 37.5 → combined 75:
   electrically identical to base toy but identical PTDF rows → size-2 block,
   trade `(1,−1)`).
@@ -330,7 +357,7 @@ rows being tight), which *is* positing `y` — no bids needed. The resulting
 `support_summary` across patterns reproduces the attribution memo's motivating
 example exactly:
 
-| pattern | `h` | priced | blocks | max block | `dim ker C` |
+| pattern | `h` | priced | blocks | max block | `dim 𝒮` |
 |---|---|---|---|---|---|
 | `parallel_wd` | 200.0 | 2 | 1 | 2 | 1 |
 | `two_blocks` | 1137.5 | 7 | 2 | 4 | 3 |
@@ -338,7 +365,7 @@ example exactly:
 | `no_loop` | 137.5 | 2 | **2** | **1** | **0** |
 
 `no_loop` (the `WN`/`SH` pair) is the one that matters: priced together yet split
-into two singleton blocks with an empty trade space, because there is no
+into two singleton blocks with an empty shift space, because there is no
 circulation joining them — exactly the memo's claim that being in the same
 certificate is not a reason to aggregate. `outer_loop` is the contrast: a
 circulation binds four rows into one block.
@@ -385,7 +412,7 @@ untouched (tested). Choosing the slack to suit a figure's axes is free.
 **Reading the block columns.** Blocks *partition* the priced rows `J*(b;y)`, so
 `n_blocks` counts groups, not ambiguity — two rows that cannot trade give **two**
 singleton blocks, which is the fully-identified case. Ambiguity is
-`dim_trade_space` (`0` = every row separately attributable) or equivalently
+`dim_shift_space` (`0` = every row separately attributable) or equivalently
 `max_block` (`1` = the same thing). `gap_summary` reports `n_priced` alongside so
 `n_blocks == n_priced` reads directly as "all singletons". The plain 3-node has
 no parallel elements and is all singletons everywhere; the redundant variant and
@@ -403,7 +430,7 @@ different multiplicity, and the column names are what keep them apart:
 
 | | support attribution | misalignment attribution |
 |---|---|---|
-| columns | `value`, `value_frac`, `dim_trade_space` | `loss`, `loss_lo`, `loss_hi`, `identified`, `loss_frac` |
+| columns | `value`, `value_frac`, `dim_shift_space` | `loss`, `loss_lo`, `loss_hi`, `identified`, `loss_frac` |
 | formula | `W_{J_r} = Σ_{i∈J_r} b_i μ_i` | `U_B = Σ_{i∈B} μ_i[b_i − (Kq)_i]` |
 | sums to | `h(model;y)` | `h(model;y) − h(target;y)` |
 | needs | **`model` alone** | a **nested pair** |
@@ -419,11 +446,11 @@ Costs 1 solve without a target, 3 with, whatever the block count.
 A `value` range column was built once and removed: it is provably and numerically a
 point (width `0.0000` vs a face leak of `1.0086` while the `μ_i` in the block
 swing by `325.7`), so it is a *test* (`test_toy_blocks`), not a column.
-`dim_trade_space` is computed per block as `dim ker C` restricted to it, not
+`dim_shift_space` is computed per block as `dim 𝒮` restricted to it, not
 assumed to be `size − 1`. A zero failure mode yields a *typed* null `loss_frac`
 so the `U` and `V` frames still stack.
 
-### What the texas5 design settled (see LEARNINGS.md for the derivations)
+### What the texas5 design settled (see VALIDATION.md for the results)
 
 - **`solve_limit_design` has no `trades` argument, and cannot need one.** Pinning
   every row of a circuit `S` already forces its trade: `Σ zᵢ kᵢ = 0` gives
@@ -446,57 +473,43 @@ so the `U` and `V` frames still stack.
   ratings. It costs realism (real post-contingency ratings are higher) and
   margin (pinning a base row pins its twin).
 - **`identified = False` is witnessed**, and it is exactly primal multiplicity of
-  the meet: the block share is `const − wᵀq` read at a *target* optimum `q`, so it
-  is a number only when `wᵀq` is constant on the meet's optimal face. Vertices
+  the intersection: the block share is `const − wᵀq` read at a *target* optimum
+  `q`, so it is a number only when `wᵀq` is constant on the intersection's
+  optimal face. Vertices
   give `True` vacuously; **facet normals** are where it bites. Every failure is in
   `U` at the normal of a **contingency** row — `f` is base-only, so it cannot
   price that row and its `w` falls outside `span{1} + row(K_{J*(f∧g)})`.
   `primal_invariant` and `block_share_range` agree on all 94 blocks.
-- **The floor is a gauge, not a switch.** `loss − floor` is the duality gap of the
-  model's certificate against the target, so `floor_ratio = 1` iff that
-  certificate is *also* optimal for the target. A priced row where the models
-  agree contributes zero to the floor while still contributing to `h(model)`, so
-  a derate uniform over one contingency but not the whole stack lands strictly
-  inside `(0, 1)` — 56 of 60 vertices here.
 - **The regime map replaces the derate search.** `faces(f ∧ g)` plus
   `gap_summary` at each exposing direction found both modes positive at 58 of 60
   vertices, with no tuning; the 3-node needed a hand-picked `α`.
 
 ### A finding from step 3: tolerances must scale with the *support values*
 
-Every attribution quantity — `U`, `V`, a repair value, a floor, a block share —
+Every attribution quantity — `U`, `V`, a block share —
 is a **difference of support values** of order `1e4`, so its absolute error is
 `~1e-4` however small the difference itself is. Several toy cases have a failure
 mode of exactly zero, so a tolerance proportional to the quantity being tested
 demands more precision than the inputs carry, and 29 of the first T0 runs failed
-on that alone. `tests/test_attribution.py::_tol` scales by `max(|h_f|, |h_g|)`
+on that alone. `tests/test_attribution.py::_tol` scales by `max(|h_ftr|, |h_dam|)`
 instead, and this is the right default for anything comparing these objects.
 
-It has to be a *tolerance* rather than exact equality because these bounds are
-genuinely **attained**: `cor:canonical` item 1 makes the floor exactly tight for
-a uniform derate, and the ceiling closes at `q^∧` by construction, so the
-comparisons are routinely between two computations of the same number.
+It has to be a *tolerance* rather than exact equality because the comparisons
+are routinely between two computations of the same number (and the stacked
+intersection's duplicate rows cost CLARABEL a few more digits).
 
 ### Results tables (step 4) — deliberately thin
 
 `gap_summary` returns a **dict**, not a frame, so a sweep is
 `pl.DataFrame([gap_summary(...) for ...])` and adding a column is adding a key.
-`constraint_table` gives per-constraint detail, restricted to rows that either disagree
-or carry a share. Both are meant to grow as the analysis asks; don't try to make
+`constraint_table` gives per-constraint detail over the priced rows. Both are meant to grow as the analysis asks; don't try to make
 them complete up front.
 
-Floors are reported **per mode** (`floor_U`/`floor_V` and their ratios) because
-only *level* differences carry a floor at all, so a case routinely has a
-meaningful ratio in one mode and a structural zero in the other. And "zero"
-for a failure mode means below `1e-6 * max(|h_f|, |h_g|)`, not below `EPS` —
-same lesson as the test tolerances.
-
-Already visible in the toy sweep, before T1 is written: `floor_ratio_V = 1.0`
-for every uniform derate (`cor:canonical` item 1 — the floor is exactly tight)
-and `0.0` for `extra_ftr` (a pure coverage difference — `cor:diagnosable` says
-zero floor, all displaced value).
-
 ### Removed in step 3, with reasons
+
+(Later removals, 2026-09-16: `floor`, `ceiling`, `repair_value`/`repaired`,
+`differences` -- out of the paper; `align`, `meet`, `_nested_pair` -- superseded
+by the stacked intersection, which needs no common row index.)
 
 - `classify` / `Classification` — binding/degenerate/slack is a one-line read of
   `robust_bounds`' `(lo, hi)`; nothing downstream consumed the labels.
@@ -541,15 +554,15 @@ zero floor, all displaced value).
   `_branch_limits`: single-call-site internals, not API.
 - **`support_summary`** — kept, but it no longer computes anything. It was a
   second solve-and-partition that had to agree with `block_table` about the same
-  certificate (and already disagreed *in principle* about `dim_trade_space`, see
+  certificate (and already disagreed *in principle* about `dim_shift_space`, see
   below); it is now a groupby of that table. `h` is `value.sum()`, exact by
   `cor:block_value_invariance`.
-- `_block_shape`'s `dim_trade_space` was `sum(sizes) - len(blocks)`, which assumes
+- `_block_shape`'s `dim_shift_space` was `sum(sizes) - len(blocks)`, which assumes
   every block has corank exactly 1. That is **false on texas5** — `two_blocks`
   reported 5 against a true 3, `outer_loop` 3 against a true 1 — so the old
   numbers in the table above were wrong, not just fragile. Now sums the actual
-  `dim ker C` per block, which agrees with `dim ker C` taken over all of `J*`
-  (as it must: `D` splits as a direct sum over blocks).
+  `dim 𝒮` per block, which agrees with `dim 𝒮` taken over all of `J*`
+  (as it must: `𝒮` splits as a direct sum over blocks).
 - `block_shares` — same argument one level up: it was `row_shares(...)` summed
   over `attribution_blocks(...)`. `metrics.misalignment_blocks` is the supported
   way to get those numbers, with their ranges attached.
@@ -562,9 +575,9 @@ zero floor, all displaced value).
   and `align` reads limits from that list, so a repaired model could silently
   re-align to its pre-repair values.
 
-**Vocabulary:** the memos write `f ∧ g` and say "wedge"; the code says **`meet`**
-throughout (`meet()`, `q_meet`, `h_meet`). Don't reintroduce `wedge` as an
-identifier.
+**Vocabulary:** the paper writes `Q^∩` and says "intersection model"; the code says
+**`intersection`** (`intersection()`, `q_int`, `h_int`). `meet` and `wedge` are
+retired; don't reintroduce either as an identifier.
 
 ### Per-contingency / asymmetric / emergency-rating limits
 Supported: `b` is a free per-row vector and `clear_dam` reads the upper and lower
@@ -591,14 +604,11 @@ limit per contingency independently. (`from_limits` was considered and dropped �
 Steps 1 (notation), 2 (primitives), 3 (`attribution.py`), 4 (results tables),
 6 (the 5-node case + notebook) and 7 (search + viz) are **done**. Remaining:
 
-1. **T1, T2 on the 3-node.** `cor:canonical` items 1/4/5 are exact closed forms —
-   pass/fail, no tolerance judgment. Note item 1 now has a sharper reading: the
-   floor is tight iff the model's certificate survives as a certificate for the
-   target, which needs a derate uniform over the **whole stacked system**.
-   The floor-to-total ratio is *not* binary in general — see the texas5 findings.
-2. **Repair sub/superadditivity (PLAN §4)** — the only computational item left on
-   `PLAN.md`. Brute force over disjoint row subsets; the blocks pick the
-   candidates.
+The 3-node is out of scope for the paper (the 5-node replaced it) but stays as
+the code-verification oracle. Current work is the validation section: see
+`VALIDATION.md`. Next computational items: the N-2 cone check on texas5 (do
+4-row generalizations of the LODF triple stay in the cone?), then systematic RTS
+pairs (N-1 baseline vs derate / targeted N-2 / outage in the DAM base case).
 
 Deferred: multi-interval `δ(T)` (Theorem 4 — `dam_instance(interval)` was built
 for it); `build_dam_instance` (the inverse of `clear_dam`) — only needed where a
@@ -609,7 +619,7 @@ design (bilinear / cutting-plane over a union of polyhedra).
 Scale note: dense `K` is fine at 73 buses × ~120 contingencies. The per-row
 robust-bound LP loop was the bottleneck and is now fast (candidate restriction to
 primal-binding rows + single compiled Parameter-objective LP, ~54x); when only
-`J*(b;y)` is needed (attribution/trade space, not the lo/hi ranges), use
+`J*(v)` is needed (attribution/shift space, not the lo/hi ranges), use
 `J_star` (one CLARABEL solve, strict complementarity).
 
 ### Plotting note (settled)

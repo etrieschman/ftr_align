@@ -18,7 +18,7 @@ CELLS = [(c, s) for c in toy.MODELS for s in toy.SCENARIOS]
 
 @pytest.mark.parametrize("case,scenario", CELLS)
 def test_merch_surplus_equals_support_value(case, scenario):
-    """Prop. 1: realized DAM merchandising surplus == h(g; y*)."""
+    """prop:cr_support: realized DAM congestion revenue (the conference paper's MS_DAM) == h(dam; y*)."""
     _, g_model = toy.MODELS[case]
     dam = clear_dam(g_model, toy.SCENARIOS[scenario], solver=CLEAR_SOLVER)
     h_g = SupportProblem(g_model, dam.direction).solve(solver=CLEAR_SOLVER)

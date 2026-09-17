@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from ftr_align import clear_dam, meet
+from ftr_align import clear_dam, intersection
 from ftr_align.polytope import free_basis, polygon
 from ftr_align.viz import (
     basis,
@@ -99,12 +99,12 @@ def test_vertical_constraints_are_not_a_special_case(ax):
 
 
 def test_a_full_figure_composes(ax):
-    """The layers are meant to stack: DAM, FTR, their meet, and both optima."""
+    """The layers are meant to stack: DAM, FTR, their intersection, and both optima."""
     f, g = toy.MODELS["mixed"]
     d = clear_dam(g, toy.SCENARIOS["(a)"], solver=CLEAR).direction
     draw_region(ax, g, label="Q(g)")
     draw_region(ax, f, label="Q(f)", color="C4", ls="dotted")
-    draw_region(ax, meet(f, g), label="Q(f^g)", color="C1", ls="dashed", fill_alpha=0.0)
+    draw_region(ax, intersection(f, g), label="Q(f^g)", color="C1", ls="dashed", fill_alpha=0.0)
     draw_optimum(ax, g, d, solver=CLEAR)
     draw_optimum(ax, f, d, solver=CLEAR, color="C4", ls="dotted")
     label_axes(ax, g)
@@ -142,7 +142,7 @@ def test_label_axes_refuses_a_positional_basis(ax):
     so a stale ``label_axes(ax, model, T)`` fails loudly instead of being read as
     ``drop``."""
     _, g = toy.MODELS["derate"]
-    T = free_basis(3, g.network.slack_idx)
+    T = free_basis(3, toy.NETWORK.slack_idx)
     with pytest.raises(TypeError):
         label_axes(ax, g, T)
 

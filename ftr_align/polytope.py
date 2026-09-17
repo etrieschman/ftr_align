@@ -167,7 +167,7 @@ def faces(
     and defined up to the usual ``+c*1`` shift.  In 2-D the vertices come back in
     cyclic order, which is sweep order.
     """
-    n = model.network.n_nodes
+    n = model.n_nodes
     if n > MAX_NODES:
         raise ValueError(
             f"vertex enumeration refused at {n} nodes (limit {MAX_NODES}): by the "
@@ -175,7 +175,7 @@ def faces(
             f"have ~m^{(n - 1) // 2} vertices, so the enumeration itself is the "
             "wrong question at this scale."
         )
-    drop = model.network.slack_idx if drop is None else drop
+    drop = n - 1 if drop is None else drop
     T = free_basis(n, drop)
     M, c, rows = plane_system(model, T)
     if not is_bounded(M):
@@ -206,8 +206,8 @@ def polygon(
     directly in plot coordinates -- market bounds such as a generation cap -- which
     cut the outline down.
     """
-    n = model.network.n_nodes
-    T = free_basis(n, model.network.slack_idx) if T is None else np.asarray(T)
+    n = model.n_nodes
+    T = free_basis(n, n - 1) if T is None else np.asarray(T)
     if T.shape[1] != 2:
         raise ValueError(f"polygon() needs a 2-column basis, got {T.shape[1]}")
     M, c, _ = plane_system(model, T)
