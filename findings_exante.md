@@ -11,42 +11,55 @@ set so chosen lines bind in each hour (t1: DH, SH; t2: NH, ND). Each hour's
 direction `v_t` is the sum of its binding rows, so it is constant on every bus
 the DAM sees. `U_t = h_FTR - h_∩`, `V_t = h_DAM - h_∩`, equal weights.
 
+**The ladder** (rungs of FTR-model design, each evaluated by `E[U]`, `E[V]`):
+B1 one physical state, every limit derated by `α`. B2 the stacked rows of
+every hour's physical state ("model every planned outage"). S1 limits `b`
+designed at a fixed state, by enumeration over the dual vertices of `Λ(v_t)`.
+S2 S1 at every switch state, best kept. S3 the switch given a continuous
+susceptance `y_H`, S1 at each. S4 every susceptance free (not reached).
+Designed limits are fenced at the physical ratings from finding 5 on.
+
 ---
 
 ## 1. A closed switch with no limit is infinite exposure the moment prices split
 
-The closed FTR polytope contains the direction "move injection from H2 to H1".
+The _closed_ FTR polytope contains the direction "move injection from H2 to H1".
 No line flow changes, only the switch flow, and with `b_H = ∞` nothing stops
 it. The intersection with the open-switch DAM is bounded, because the open
 network can only move power H1→H2 over lines. So `h_FTR(v_t) = ∞` and
 `h_∩(v_t) < ∞`, hence `U_t = ∞`, as soon as `v_H1 ≠ v_H2`. A derate `α`
 scales line limits and never touches this direction. In money: the SFT accepts
 an unbounded FTR from H2 to H1 worth `v_H1 − v_H2` per MW. Two repairs, both
-design choices: open the switch in the FTR model, or give it a finite one-way
+design choices: open the switch in the FTR model, or give it a finite
 cap. (B1 closed: `U_2 = ∞` at every `α`.)
 
-## 2. U is a ceiling, V is a containment
+## 2. U and V are the two excess reaches along a direction
 
-`U_t = 0` says the FTR model does not sell more along `v_t` than the
-intersection can pay. It constrains a *value*; the FTR model need not contain
-anything. `V_t = 0` says the intersection reaches the DAM's best value along
-`v_t`, so some DAM-optimal injection must lie *inside* the FTR model. It
-constrains a *set*. Every result below is one of these two conditions holding
-or failing.
+Along `v_t` each polytope has a reach, its support value. The intersection
+never reaches further than either parent: `h_∩ ≤ h_FTR`, `h_∩ ≤ h_DAM`.
+- `V_t` is how far the **DAM** reaches beyond the intersection along `v_t`:
+  rent the market collects that the auction never sold.
+- `U_t` is how far the **FTR model** reaches beyond the intersection along
+  `v_t`: payouts the auction promises at prices `v_t` that the market cannot
+  back.
 
-## 3. One injection for both hours makes B2 perfect, and the ladder vacuous
+The zero conditions are mirror images. `V_t = 0` iff some DAM-optimal point is
+FTR-feasible. `U_t = 0` iff some FTR-optimal point is DAM-feasible. Each is
+containment of the *other* model's best point. The asymmetry that matters for
+design: `U` is fixed by shrinking the FTR model's reach, and shrinking is also
+what breaks `V`.
 
-With a single injection `q` used in both hours:
-- The ratings rule sets every line's rating at or above `q`'s flow in both
-  states, so `q` is feasible in both DAM polytopes.
-- `v_t` is the sum of the binding rows, so `v_t·q'` is at most the sum of those
-  ratings for any feasible `q'`, and `q` attains it. `q` is a DAM optimum in
-  both hours.
-- B2 is `Q_closed ∩ Q_open`, which contains `q`.
-- So the intersection reaches the DAM's value in both hours: `V_1 = V_2 = 0`.
+## 3. Misalignment needs an hour whose whole optimal face leaves the other state
 
-Misalignment needs the two hours' optimal injections to differ enough that one
-is infeasible under the other's physics. Two injections, not one.
+By finding 2, a model built from physical rows (B2) has `V_t = 0` as soon as
+*one* DAM-optimal point of hour `t` is feasible in every state. Two things
+make that easy. An injection that is optimal in several hours and feasible in
+every state settles all of them at once. And an hour whose optimum is a whole
+facet (one line binding) nearly always has some point of it inside the other
+state's polytope. `V_t > 0` needs the hour's entire optimal face to lie
+outside: two lines pinned together, in this network with a lopsided station
+split. One run put four hours with single-line bindings under one rating
+vector and every rung reached `(0, 0)`.
 
 ## 4. In version A, the closed hour never produces V for B2
 
@@ -108,6 +121,22 @@ smaller and holds both hours' optima.
 With two scenarios, eight line limits and a switch cap have slack to spare, so
 `b` alone saturates. Upper rungs can only matter when scenarios outnumber the
 freedom in `b` or `b` is fenced.
+
+**The open state's advantage is not general.** Four hours, two lines pinned in
+each (wind evening DH, WD; gas evening SD, SH; north midday NH, ND; south
+midday DH, WD), 10% margin, fenced, `τ = 0`:
+
+| rung | E[U] | E[V] | where V lands |
+|---|---|---|---|
+| B2 stack | 0 | 4.2 | north midday only (16.9) |
+| S1 closed | 0 | 4.2 | north midday only (16.9) |
+| S1 open | 0 | 8.1 | gas evening 1.3, north midday 21.5, south midday 9.7 |
+
+A second closed hour pricing different lines (SD, SH) forces the open model
+to tighten five limits to hold its reach in that hour (finding 2), and those
+tightenings cut off the open hours' optima. The closed model's one failure is
+the forced one from above. So neither corner is ideal here, and this is the
+first instance where S3 has something to show.
 
 ## 6. Fenced, the exposure budget buys the closed model nothing
 

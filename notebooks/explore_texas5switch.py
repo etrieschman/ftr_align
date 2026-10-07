@@ -93,8 +93,8 @@ for sc in SCENARIOS:
 # (the "include every planned outage" practice).
 
 # %%
-def ladder_row(label, ftr, **extra):
-    tbl = t5s.evaluate(ftr, SCENARIOS)
+def ladder_row(label, ftr, scenarios=None, **extra):
+    tbl = t5s.evaluate(ftr, SCENARIOS if scenarios is None else scenarios)
     EU, EV = t5s.expected(tbl)
     return {"design": label, **extra, "E[U]": EU, "E[V]": EV,
             **{f"U_{i+1}": u for i, u in enumerate(tbl["U"])},
@@ -130,10 +130,11 @@ print(b2)
 FENCE = t5s.rating_fence(B_LINE)  # no FTR line limit above its physical rating (no-regrets rule)
 
 
-def s1(label, ftr_template, tau, b_max=FENCE):
-    d = t5s.design_limits(ftr_template, SCENARIOS, tau, b_max=b_max)
+def s1(label, ftr_template, tau, b_max=FENCE, scenarios=None):
+    scenarios = SCENARIOS if scenarios is None else scenarios
+    d = t5s.design_limits(ftr_template, scenarios, tau, b_max=b_max)
     ftr = t5s.with_designed_limits(ftr_template, d.b)
-    row = ladder_row(label, ftr, tau=tau, n_lp=d.n_lp, vertices=str(d.vertices))
+    row = ladder_row(label, ftr, scenarios, tau=tau, n_lp=d.n_lp, vertices=str(d.vertices))
     return row, d, ftr
 
 
@@ -179,3 +180,41 @@ for yh in Y_GRID:
     grid_rows.append(row)
 s3 = pl.DataFrame(grid_rows)
 print(s3.select("y_H", "E[U]", "E[V]", "U_1", "U_2", "V_1", "V_2", "b_switch", "n_lp", "vertices"))
+
+# %% [markdown]
+# ## Step 8: four hours, two-line patterns pinned, 10% margin
+#
+# Single-line bindings under a loose rating vector made every rung reach (0, 0)
+# (finding 3).  Here every hour binds TWO lines, the wind evening (closed) and the
+# south midday (open) share the SAME pair at equal flow -- `match_flows` adjusts
+# the midday injection by the least change that reproduces the evening's DH and
+# WD flows under the open state (and keeps its ND just under the north hour's) -- and the margin on unbound lines is 10%.
+
+# %%
+Q3 = np.array([ 40.,  30., 120.,  -80., -65., -45.])   # eve gas, closed
+Q4 = np.array([100.,  90.,  20.,  -60., -30., -120.])  # mid south, open (story)
+F1 = t5s._state_ptdf(CLOSED) @ Q1
+Q4M = t5s.match_flows(OPEN, Q4, {"DH": F1[t5s.LINE_NAMES.index("DH")], "WD": F1[t5s.LINE_NAMES.index("WD")], "ND": 24.0})
+INTERVALS4 = {
+    "t1 eve wind":   (CLOSED, Q1,  ["DH", "WD"]),
+    "t3 eve gas":    (CLOSED, Q3,  ["SD", "SH"]),
+    "t2 mid north":  (OPEN,   Q2,  ["NH", "ND"]),
+    "t4 mid south*": (OPEN,   Q4M, ["DH", "WD"]),   # * matched to t1's DH/WD flows
+}
+print(pl.DataFrame({"node": list(NODE_NAMES), **{k: v[1] for k, v in INTERVALS4.items()}}))
+B4, SC4, cross4 = t5s.scenarios_from_injections(INTERVALS4, margin=0.10)
+print(pl.DataFrame({"line": list(t5s.LINE_NAMES), "rating": B4}))
+print("injection infeasible under state of:", {k: [j for j, ok in v.items() if not ok] for k, v in cross4.items()})
+
+# %%
+FENCE4 = t5s.rating_fence(B4)
+rows4 = [ladder_row("B2 stack", intersection(t5s.dam_model(CLOSED, B4), t5s.dam_model(OPEN, B4)), SC4)]
+designs4 = {}
+for name, y in (("closed", [np.inf]), ("open", [0.0])):
+    row, d, ftr = s1(f"S1 {name}", t5s.model(y, b_line=B4, b_switch=100.0), tau=0.0, b_max=FENCE4, scenarios=SC4)
+    rows4.append(row)
+    designs4[name] = d
+    print(f"S1 {name} limits:", dict(zip(t5s.ELEMENT_NAMES, np.round(d.b[: len(t5s.ELEMENT_NAMES)], 1))),
+          " switch lower:", round(d.b[-1], 1))
+pl.Config.set_tbl_cols(20); pl.Config.set_tbl_width_chars(200)
+print(pl.DataFrame(rows4).select("design", "E[U]", "E[V]", "U_1", "U_2", "U_3", "U_4", "V_1", "V_2", "V_3", "V_4", "n_lp", "vertices"))

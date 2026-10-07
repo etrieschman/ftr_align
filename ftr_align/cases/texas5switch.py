@@ -509,3 +509,16 @@ def scenarios_from_injections(intervals: dict, margin: float = 0.25, floor: floa
         v = sum(np.sign(F[i, LINE_NAMES.index(e)]) * Hs[i][LINE_NAMES.index(e)] for e in intervals[k][2])
         scenarios.append(Scenario(k, states[i], dam_model(states[i], b_line=b_line), v, w))
     return b_line, scenarios, cross
+
+
+def match_flows(state, q0, targets: dict) -> np.ndarray:
+    """The balanced injection closest to ``q0`` whose flows under ``state`` hit
+    ``targets`` (``{line: flow}``) exactly.  Lets the same lines bind in two hours
+    at equal flow, which is what the ratings rule needs for a shared pattern.
+    Least-norm correction: minimise ``|q - q0|`` s.t. ``H_rows q = f``, ``1^T q = 0``."""
+    q0 = np.asarray(q0, dtype=float)
+    Hs = _state_ptdf(state)
+    rows = np.vstack([Hs[LINE_NAMES.index(e)] for e in targets] + [np.ones(n_nodes)])
+    rhs = np.array(list(targets.values()) + [0.0])
+    dq = np.linalg.lstsq(rows, rhs - rows @ q0, rcond=None)[0]
+    return q0 + dq
