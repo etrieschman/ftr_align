@@ -262,3 +262,25 @@ for yh in [0.0, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 20.0, np.inf]:
 at_ratings = pl.DataFrame(rows10)
 print(at_ratings.select(["y_H"] + [c for c in at_ratings.columns if c.startswith("U ")]))
 print(at_ratings.select(["y_H"] + [c for c in at_ratings.columns if c.startswith("V ")]))
+
+# %% [markdown]
+# ## Step 11: a capped closed switch is B2 (finding 5)
+#
+# FTR model with the switch closed, every line at its rating, only the switch
+# capped.  Two-sided cap of (31.7, 0) reproduces B2's U and V in every hour; a
+# tighter cap raises V without changing U; a zero cap is not the open switch.
+
+# %%
+def closed_with_cap(lo, hi):
+    m = t5s.model([np.inf], b_line=B4, b_switch=np.inf)
+    b = m.b.copy()
+    r = t5s.n_lines + t5s.n_switches
+    b[t5s.n_lines] = hi          # H1 -> H2
+    b[r + t5s.n_lines] = lo      # H2 -> H1
+    return t5s.with_designed_limits(m, b)
+
+
+for lo, hi in [(np.inf, np.inf), (31.7, np.inf), (31.7, 0.0), (20.0, 0.0), (0.0, 0.0)]:
+    tbl = t5s.evaluate(closed_with_cap(lo, hi), SC4)
+    print(f"cap H2->H1 <= {lo:>5}, H1->H2 <= {hi:>5}:  U = {np.round(tbl['U'].to_numpy(), 2)}   "
+          f"V = {np.round(tbl['V'].to_numpy(), 2)}   E[V] = {t5s.expected(tbl)[1]:.2f}")
