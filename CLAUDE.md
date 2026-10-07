@@ -279,7 +279,7 @@ notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
                 direction, which nothing else draws); figures_toy stays the one
                 that writes the PNGs, optima and all
 findings_validation.md  what each case shows for the attribution machinery
-findings_design.md      the ex-ante design ladder: findings 1-7 and the queue
+findings_design.md      the ex-ante design ladder: findings 1-8 and the queue
                 of next steps ("Next" at the bottom; read it first when
                 resuming design work)
 tests/          oracle tests: Tables II & III, strong duality, blocks;
@@ -301,16 +301,24 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
   downstream changed.  Ladder B1 (derate) / B2 (stack) / S1 (design `b` at a
   fixed state, dual-vertex enumeration or big-M MILP) / S2 (best state) / S3
   (grid over the switch susceptance) all run; S4 (all `y` free, bilinear) is not
-  started.  Headline: with limits fenced at ratings, each switch state carries a
-  `V` the other does not (topology-forced for closed, U-induced for open), and
-  an interior susceptance beat both (E[V] 1.2 vs 4.2 closed / 8.1 open).
-  Against every facet normal of both DAM polytopes, B2 is optimal (theorem) and
-  on this network perfectly aligned.  The solver seam held: cvxpy + HiGHS /
-  CLARABEL throughout; `design_limits_milp` is the repo's first MIP.
-- **Conventions settled for design work**: `t` indexes hours; a "clearing" is a
-  face of the DAM polytope, not a point; designed limits are fenced
-  (`b <= rating`) and symmetric per line, the switch cap one-directional; a
-  0.5% MIP gap costs ~0.6 in E[V] on these instances.
+  started.  Results (four-hour case, limits fenced at ratings): each FTR switch
+  state has a `V` the other does not (topology-bounded for closed, exposure-
+  bounded for open); a two-sided flow limit on the closed switch reproduced B2;
+  an intermediate susceptance had the lowest E[V] (1.2 vs 4.2 closed / 8.1
+  open).  If every facet normal is a realized direction, no FTR model has lower
+  `V` than B2 (theorem).  The solver seam held: cvxpy + HiGHS / CLARABEL
+  throughout; `design_limits_milp` is the repo's first MIP.
+- **Conventions settled for design work** (defined at the top of
+  `findings_design.md`; use these words, not synonyms): `t` indexes hours;
+  "injection", never "clearing"; "limit", never "cap"; topology-bounded `V` vs
+  exposure-bounded `V`; designed limits are fenced (`b <= rating`) and symmetric
+  per line, the switch limit per direction; a 0.5% MIP gap costs ~0.6 in E[V].
+- **Next steps live in the "Next" section at the bottom of
+  `findings_design.md`**: fairness (per-constraint / per-block shares of `V`),
+  facet directions with `τ > 0`, vertex directions via the memo's iteration
+  heuristic, other hour mixes and finding 4's open question, line-outage hours,
+  asymmetric line limits, settlement-point weights.  Erich writes findings; I
+  supply one-sentence claims, tables and checks (see memory).
 - **Not yet in the library**: nothing from the switch case is promoted out of
   `cases/texas5switch.py`.  Erich intends to push `switch_ptdf`, `Scenario` /
   `evaluate`, `dual_vertices` and the two `design_limits` upstream once the
