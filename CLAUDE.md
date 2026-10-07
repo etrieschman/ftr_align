@@ -233,6 +233,33 @@ ftr_align/
                 **Topology only, no bid data by design** -- every proposition
                 holds at arbitrary `y ⪰ 0`, and only `prop:support` needs a real
                 clearing, which the 3-node oracle already anchors.
+  cases/texas5switch.py  texas5 with station H split (H1/H2) and a switch: the
+                EX-ANTE DESIGN case (memo "Ex ante setup ... switches").  One
+                `switch_ptdf(y_switch)` covers open (y=0, column dropped),
+                relaxed (finite y, an ordinary line) and closed (y=inf, exact
+                saddle solve: node angles + a free switch flow) on a FIXED node
+                set, so NetworkModel / intersection / gap_summary / faces work
+                unchanged.  `model(y_switch, b_line, b_switch)`, `dam_model(state)`
+                (closed switch unlimited -> unbounded in node space; prices lift
+                by M^T so v is bus-constant), `bus_network` / `bus_collector` (M).
+                Scenarios: `Scenario(label, state, dam, direction, weight)`;
+                `scenarios_from_injections({label: (state, q, [binding lines])},
+                margin)` -> one rating vector for all hours (a binding line's
+                rating is its flow in its hour; others get max flow + margin) and
+                directions v_t = sum of binding rows; `match_flows` adjusts an
+                injection so chosen lines carry given flows (shared patterns
+                across hours); `flows_table`.  Evaluation: `support` (inf when
+                unbounded), `evaluate(ftr, scenarios)` -> per-hour U, V,
+                `expected`.  Design: `dual_vertices(model, v)` (vertices of
+                Lambda(v) by (n-1)-subset enumeration), `design_limits` (memo eq.
+                design-b-vertex; one compiled Parameter LP per vertex tuple,
+                enumerated), `design_limits_milp` (same, binaries + big-M per
+                vertex, HiGHS; pass `time_limit=`, `mip_rel_gap=`; a loose
+                switch cap inflates big-M and makes it crawl), `rating_fence`
+                (b_max per row = physical rating), `with_designed_limits`.
+                Also `dam_faces` / `scenario` (corner directions via faces in bus
+                space, lifted) and `design_scenarios` (solve_limit_design on the
+                stacked states) -- superseded by injections, kept.
   cases/rts_gmlc.py  73-bus loader: SHA-pinned fetch (RTS_GMLC_REF + MANIFEST
                 checksums) of bus/branch/gen CSVs + day-ahead load/renewable
                 timeseries -> load_network (DC PTDF w/ magnitude taps),
@@ -241,6 +268,8 @@ ftr_align/
                 segments, interval-synced renewable caps, regional load split to
                 buses). Cache gitignored.
 notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
+                explore_texas5switch (the design ladder B1/B2/S1/S2/S3 on two-
+                and four-hour instances; results in findings_design.md),
                 explore_rts_gmlc, figures_toy (writes to notebooks/figures/,
                 gitignored), and reproduce_conference -- the PowerUp paper's
                 fixed target: net_dual + dual_summary, Table II
@@ -249,6 +278,10 @@ notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
                 figures are one per *case* (a scenario changes only the
                 direction, which nothing else draws); figures_toy stays the one
                 that writes the PNGs, optima and all
+findings_validation.md  what each case shows for the attribution machinery
+findings_design.md      the ex-ante design ladder: findings 1-7 and the queue
+                of next steps ("Next" at the bottom; read it first when
+                resuming design work)
 tests/          oracle tests: Tables II & III, strong duality, blocks;
                 test_network (rows, with_limits, intersection == old min-model
                 on one network, across networks, node-set guard);
@@ -261,7 +294,29 @@ Library is importable only; analysis run-scripts go in a sibling `notebooks/`
 (jupytext `# %%`). Planned: `scenarios.py` (`build_dam_instance` = inverse of
 `clear_dam`, a tested roundtrip), `analysis/` (alignment, viz_toy, viz_large).
 
-## Status (2026-09-16): a model is `(K, b)`; intersection is the stack; 293 tests pass
+## Status (2026-10-07): the ex-ante design ladder runs on texas5 with a switch; 293 tests pass
+
+- **Switch case** (`cases/texas5switch.py`, `notebooks/explore_texas5switch.py`,
+  `findings_design.md`).  A switch state is just a node-space PTDF, so nothing
+  downstream changed.  Ladder B1 (derate) / B2 (stack) / S1 (design `b` at a
+  fixed state, dual-vertex enumeration or big-M MILP) / S2 (best state) / S3
+  (grid over the switch susceptance) all run; S4 (all `y` free, bilinear) is not
+  started.  Headline: with limits fenced at ratings, each switch state carries a
+  `V` the other does not (topology-forced for closed, U-induced for open), and
+  an interior susceptance beat both (E[V] 1.2 vs 4.2 closed / 8.1 open).
+  Against every facet normal of both DAM polytopes, B2 is optimal (theorem) and
+  on this network perfectly aligned.  The solver seam held: cvxpy + HiGHS /
+  CLARABEL throughout; `design_limits_milp` is the repo's first MIP.
+- **Conventions settled for design work**: `t` indexes hours; a "clearing" is a
+  face of the DAM polytope, not a point; designed limits are fenced
+  (`b <= rating`) and symmetric per line, the switch cap one-directional; a
+  0.5% MIP gap costs ~0.6 in E[V] on these instances.
+- **Not yet in the library**: nothing from the switch case is promoted out of
+  `cases/texas5switch.py`.  Erich intends to push `switch_ptdf`, `Scenario` /
+  `evaluate`, `dual_vertices` and the two `design_limits` upstream once the
+  interfaces settle.
+
+### Earlier (2026-09-16): a model is `(K, b)`; intersection is the stack
 
 - **Model refactor.** `NetworkModel` is `nodes` + per-contingency
   `ContingencyRows`; `intersection` stacks; attribution uses no common row index.
@@ -450,7 +505,7 @@ swing by `325.7`), so it is a *test* (`test_toy_blocks`), not a column.
 assumed to be `size − 1`. A zero failure mode yields a *typed* null `loss_frac`
 so the `U` and `V` frames still stack.
 
-### What the texas5 design settled (see VALIDATION.md for the results)
+### What the texas5 design settled (see findings_validation.md for the results)
 
 - **`solve_limit_design` has no `trades` argument, and cannot need one.** Pinning
   every row of a circuit `S` already forces its trade: `Σ zᵢ kᵢ = 0` gives
@@ -605,8 +660,9 @@ Steps 1 (notation), 2 (primitives), 3 (`attribution.py`), 4 (results tables),
 6 (the 5-node case + notebook) and 7 (search + viz) are **done**. Remaining:
 
 The 3-node is out of scope for the paper (the 5-node replaced it) but stays as
-the code-verification oracle. Current work is the validation section: see
-`VALIDATION.md`. Next computational items: the N-2 cone check on texas5 (do
+the code-verification oracle. The validation section is `findings_validation.md`;
+the ex-ante design ladder and its queue are `findings_design.md`. Next
+computational items on the attribution side: the N-2 cone check on texas5 (do
 4-row generalizations of the LODF triple stay in the cone?), then systematic RTS
 pairs (N-1 baseline vs derate / targeted N-2 / outage in the DAM base case).
 
@@ -614,7 +670,8 @@ Deferred: multi-interval `δ(T)` (Theorem 4 — `dam_instance(interval)` was bui
 for it); `build_dam_instance` (the inverse of `clear_dam`) — only needed where a
 figure must tell a real DAM story, since every proposition except `prop:support`
 holds at arbitrary `y ⪰ 0`; storage/batteries; RTS DAM/FTR model pairs; ex-ante
-design (bilinear / cutting-plane over a union of polyhedra).
+design S4 (all susceptances free: bilinear / cutting-plane over a union of
+polyhedra; S1-S3 are done on texas5, see `findings_design.md`).
 
 Scale note: dense `K` is fine at 73 buses × ~120 contingencies. The per-row
 robust-bound LP loop was the bottleneck and is now fast (candidate restriction to
