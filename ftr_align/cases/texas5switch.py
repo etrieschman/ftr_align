@@ -525,7 +525,7 @@ def match_flows(state, q0, targets: dict) -> np.ndarray:
 
 
 def design_limits_milp(ftr: NetworkModel, scenarios: list[Scenario], tau: float, b_max: float = B_MAX,
-                       symmetric_lines: bool = True, verbose: bool = False) -> LimitDesign:
+                       symmetric_lines: bool = True, verbose: bool = False, **solver_opts) -> LimitDesign:
     """Same problem as :func:`design_limits`, with the choice of dual vertex per
     hour made by binaries instead of enumeration.
 
@@ -563,7 +563,7 @@ def design_limits_milp(ftr: NetworkModel, scenarios: list[Scenario], tau: float,
     value = sum(pw * (vw @ q) for pw, vw, q in zip(p, v, qs))
     cons.append(sum(pw * h for pw, h in zip(p, hs)) - value <= tau)
     prob = cp.Problem(cp.Maximize(value), cons)
-    prob.solve(solver=cp.HIGHS, verbose=verbose)
+    prob.solve(solver=cp.HIGHS, verbose=verbose, **solver_opts)  # e.g. time_limit=60 (HiGHS option)
     if prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
         raise ValueError(f"MILP status {prob.status}")
     choice = tuple(int(np.argmax(z.value)) for z in zs)

@@ -227,11 +227,12 @@ print(pl.DataFrame(rows4).select("design", "E[U]", "E[V]", "U_1", "U_2", "U_3", 
 # and 8.124 reproduced), so each grid point is seconds, not minutes.
 
 # %%
-Y_GRID4 = [0.0, 0.05, 0.1, 0.2, 0.35, 0.5, 1.0, 2.0, 5.0, 20.0, np.inf]
+Y_GRID4 = [0.0, 0.1, 0.2, 0.35, 0.5, 0.75, 2.0, 5.0, 20.0, np.inf]  # 0.05 and 1.0 hit the time limit
 g4 = []
 for yh in Y_GRID4:
     tpl = t5s.model([yh], b_line=B4, b_switch=100.0)
-    d = t5s.design_limits_milp(tpl, SC4, 0.0, b_max=FENCE4)
+    # switch fenced at 100 (its flow never exceeds ~32): a 1000 cap makes big-M huge and the MILP crawl
+    d = t5s.design_limits_milp(tpl, SC4, 0.0, b_max=t5s.rating_fence(B4, b_switch=100.0), time_limit=60)
     row = ladder_row(f"S3 y_H={yh:g}", t5s.with_designed_limits(tpl, d.b), SC4, y_H=yh, vertices=str(d.vertices))
     row["b_switch"] = f"{d.b[t5s.n_lines]:.1f} / {d.b[2 * t5s.n_lines + t5s.n_switches]:.1f}"
     g4.append(row)
