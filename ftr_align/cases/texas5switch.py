@@ -522,3 +522,49 @@ def match_flows(state, q0, targets: dict) -> np.ndarray:
     rhs = np.array(list(targets.values()) + [0.0])
     dq = np.linalg.lstsq(rows, rhs - rows @ q0, rcond=None)[0]
     return q0 + dq
+
+
+def design_limits_milp(ftr: NetworkModel, scenarios: list[Scenario], tau: float, b_max: float = B_MAX,
+                       symmetric_lines: bool = True, verbose: bool = False) -> LimitDesign:
+    """Same problem as :func:`design_limits`, with the choice of dual vertex per
+    hour made by binaries instead of enumeration.
+
+    ``h_w`` stands for the FTR model's reach in hour ``w``.  It must equal ONE of
+    the vertex values ``mu_k^T b`` -- a disjunction.  Binaries ``z_{w,k}`` with
+    ``sum_k z = 1`` pick the vertex, and
+
+        h_w >= mu_k^T b - M_w (1 - z_{w,k})     for every k
+
+    is tight for the chosen ``k`` and slack by ``M_w`` for the others (big-M).
+    ``M_w = max_k mu_k^T b_max`` is the largest reach any vertex can have under the
+    fence, so it never cuts a solution off.  One MILP replaces the product of LPs.
+    """
+    K, m, n = ftr.K, ftr.n_rows, ftr.n_nodes
+    b_max = np.broadcast_to(np.asarray(b_max, dtype=float), (m,))
+    b = cp.Variable(m, nonneg=True)
+    qs = [cp.Variable(n) for _ in scenarios]
+    p, v = [sc.weight for sc in scenarios], [sc.direction for sc in scenarios]
+    verts = [dual_vertices(ftr, vw) for vw in v]
+
+    cons = [b <= b_max]
+    if symmetric_lines:
+        half = m // 2
+        cons.append(b[:n_lines] == b[half : half + n_lines])
+    hs, zs = [], []
+    for sc, q, V in zip(scenarios, qs, verts):
+        act = sc.dam.active
+        cons += [K @ q <= b, cp.sum(q) == 0, sc.dam.K[act] @ q <= sc.dam.b[act]]
+        h = cp.Variable()
+        z = cp.Variable(len(V), boolean=True)
+        M = float((V @ b_max).max())
+        cons += [cp.sum(z) == 1, h >= V @ b - M * (1 - z)]
+        hs.append(h)
+        zs.append(z)
+    value = sum(pw * (vw @ q) for pw, vw, q in zip(p, v, qs))
+    cons.append(sum(pw * h for pw, h in zip(p, hs)) - value <= tau)
+    prob = cp.Problem(cp.Maximize(value), cons)
+    prob.solve(solver=cp.HIGHS, verbose=verbose)
+    if prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+        raise ValueError(f"MILP status {prob.status}")
+    choice = tuple(int(np.argmax(z.value)) for z in zs)
+    return LimitDesign(np.asarray(b.value), float(prob.value), choice, 1)

@@ -218,3 +218,22 @@ for name, y in (("closed", [np.inf]), ("open", [0.0])):
           " switch lower:", round(d.b[-1], 1))
 pl.Config.set_tbl_cols(20); pl.Config.set_tbl_width_chars(200)
 print(pl.DataFrame(rows4).select("design", "E[U]", "E[V]", "U_1", "U_2", "U_3", "U_4", "V_1", "V_2", "V_3", "V_4", "n_lp", "vertices"))
+
+# %% [markdown]
+# ## Step 9: S3 on the four hours (MILP)
+#
+# Neither corner is ideal here (closed 4.2, open 8.1).  The vertex choice per hour
+# is made by binaries (`design_limits_milp`, validated against enumeration: 4.219
+# and 8.124 reproduced), so each grid point is seconds, not minutes.
+
+# %%
+Y_GRID4 = [0.0, 0.05, 0.1, 0.2, 0.35, 0.5, 1.0, 2.0, 5.0, 20.0, np.inf]
+g4 = []
+for yh in Y_GRID4:
+    tpl = t5s.model([yh], b_line=B4, b_switch=100.0)
+    d = t5s.design_limits_milp(tpl, SC4, 0.0, b_max=FENCE4)
+    row = ladder_row(f"S3 y_H={yh:g}", t5s.with_designed_limits(tpl, d.b), SC4, y_H=yh, vertices=str(d.vertices))
+    row["b_switch"] = f"{d.b[t5s.n_lines]:.1f} / {d.b[2 * t5s.n_lines + t5s.n_switches]:.1f}"
+    g4.append(row)
+s3_4 = pl.DataFrame(g4)
+print(s3_4.select("y_H", "E[U]", "E[V]", "V_1", "V_2", "V_3", "V_4", "b_switch", "vertices"))
