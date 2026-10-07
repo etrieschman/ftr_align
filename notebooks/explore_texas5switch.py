@@ -238,3 +238,27 @@ for yh in Y_GRID4:
     g4.append(row)
 s3_4 = pl.DataFrame(g4)
 print(s3_4.select("y_H", "E[U]", "E[V]", "V_1", "V_2", "V_3", "V_4", "b_switch", "vertices"))
+
+# %% [markdown]
+# ## Step 10: the undesigned FTR model at every susceptance
+#
+# Every limit at its rating, switch unlimited, no design.  Per hour U and V across
+# `y_H`.  The closed hours' U is the same at every finite `y_H` (an unlimited switch
+# reproduces every open-network flow pattern); the north midday's V is the
+# topology-bounded V; the open hours' U is finding 1 with a finite switch.  With a
+# switch row present (y_H > 0) the design can cap the switch instead of lowering
+# line limits -- that cap is why S3 beats both states (finding 7).
+
+# %%
+rows10 = []
+for yh in [0.0, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 20.0, np.inf]:
+    ftr = t5s.model([yh], b_line=B4, b_switch=np.inf if yh == np.inf else 1e4)
+    tbl = t5s.evaluate(ftr, SC4)
+    r = {"y_H": yh}
+    for sc, u, v in zip(SC4, tbl["U"], tbl["V"]):
+        r[f"U {sc.label}"] = u
+        r[f"V {sc.label}"] = v
+    rows10.append(r)
+at_ratings = pl.DataFrame(rows10)
+print(at_ratings.select(["y_H"] + [c for c in at_ratings.columns if c.startswith("U ")]))
+print(at_ratings.select(["y_H"] + [c for c in at_ratings.columns if c.startswith("V ")]))

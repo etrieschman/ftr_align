@@ -17,7 +17,6 @@ From the memo: `V_t = 0` iff some injection optimal for hour `t`'s DAM is feasib
 No choice of `b` within the fence goes below it.
 **Exposure-bounded `V`** is whatever a design has on top of that.
 It appears only because some limits were set below their ratings to hold `U = 0`, and those lower limits exclude the injection the hour needs.
-So `V_t(design) = V_t(all limits at rating) + exposure-bounded part`.
 
 **Setup.**
 texas5 with station H split into H1 (the NH side) and H2 (the SH/DH side) joined by a switch; WD1/WD2 merged.
@@ -82,34 +81,47 @@ So at `τ = 0` nothing beats B2.
 Refusing exposure in every direction is today's practice, derived.
 Design gains exist only because realized directions are few and multi-line.
 
-## 4. Each switch state has a `V` the other does not, and `b` removes neither
+## 4. Each switch state of the FTR model has a `V` the other does not, and `b` removes neither
 
-Open the switch in the FTR model.
-In a closed hour the DAM prices H1 and H2 equally, so moving withdrawal between them changes neither the value nor any line flow, only the switch flow.
+Two FTR models: the FTR model with the switch **open**, and the FTR model with the switch **closed**.
+Two kinds of hour: an hour whose DAM ran with the switch **closed** (the wind evening, the gas evening), and an hour whose DAM ran with the switch **open** (the north midday, the south midday).
+
+**The FTR model with the switch open has no topology-bounded `V` in any hour.**
+Take an hour whose DAM ran with the switch closed.
+That DAM priced H1 and H2 equally, so moving withdrawal from H2 to H1 changes neither the value `v_t·q` nor any line flow, only the switch flow.
 Move it until the switch flow is zero.
-That injection is feasible on the open network, because a closed-network flow pattern with zero switch flow is also an open-network flow pattern.
-So the open FTR model has no topology-bounded `V` in any closed hour.
-Its `V` is exposure-bounded: in a closed hour the open network can carry more along `v_t` than the closed DAM (`U = 36.6` at ratings in the wind evening), so limits must drop below rating to hold `U = 0`, and each drop can exclude an open hour's injection.
+The result is a flow pattern with no flow on the switch, so it is also a flow pattern of the open network, and the hour's injection (so moved) is feasible in the FTR model with the switch open.
+An hour whose DAM ran with the switch open is feasible in that FTR model trivially.
 
-Close the switch in the FTR model.
-In an open hour the DAM's injection has a split fixed by prices.
-On the closed network that split sends flow through the switch, the loop redistributes it, and a line can exceed its rating.
-The north midday puts 29 MW on the switch, ND exceeds its rating, and `V = 16.9` of 104.6.
-This `V` is topology-bounded.
-It is the cost the "model every planned outage" rule `s_j = min_t s_{j,t}` avoids.
+**The FTR model with the switch open does have exposure-bounded `V`, and it comes from the closed hours.**
+In the wind evening, with every FTR limit at its rating, the FTR model with the switch open has `U = 22.4`: along that hour's direction it can sell more than the closed DAM collected, because the open network routes the same injections differently and reaches further along `v_t` before any rating binds.
+To bring `U` to zero the design must lower some line limits below their ratings (NH to 58.5, DH to 40.3, WS to 12.7, WN to 2.7).
+Those lowered limits apply in every hour.
+When the injection of an open hour no longer fits under them, that hour gets `V`.
+That `V` exists only because of the lowered limits, so it is exposure-bounded.
 
-**Each closed hour can only add `V` to the open FTR model, each open hour can only add `V` to the closed one, and `b` removes neither.**
+**The FTR model with the switch closed has topology-bounded `V`, and it comes from the open hours.**
+Take the north midday, whose DAM ran with the switch open and priced H1 below H2.
+Its injection puts 80 MW of load at H1 and 10 at H2.
+On the closed network that split sends 29 MW through the switch, the loop redistributes it, and ND's flow exceeds its rating.
+No limit at or below rating admits that injection, so the FTR model with the switch closed has `V = 16.9` of 104.6 in that hour whatever `b` is.
+In the closed hours this FTR model has `U = 0` at ratings (it is the DAM's own network), so it lowers no limits and has no exposure-bounded `V`.
+This is the `V` that the "model every planned outage" rule `s_j = min_t s_{j,t}` avoids, and the `U` it does not.
+
+**Each hour whose DAM had the switch closed can only add `V` to the FTR model with the switch open.
+Each hour whose DAM had the switch open can only add `V` to the FTR model with the switch closed.
+`b` removes neither.**
 Fenced, `τ = 0`:
 
-| instance | B2 | S1 closed | S1 open |
+| instance | B2 | S1, FTR switch closed | S1, FTR switch open |
 |---|---|---|---|
-| two hours | 8.4 | 8.4 | **0** |
+| two hours (wind evening, north midday) | 8.4 | 8.4 | **0** |
 | four hours | 4.2 | 4.2 | 8.1 |
 
-With one closed hour, the limits the open model lowers exclude nothing the north midday needs, so its `V` is zero.
-With two closed hours that bind different lines, the lowered limits exclude the injections of the three other hours, so its `V` is 8.1.
-S1 closed equals B2 in both instances, since its only `V` is topology-bounded.
-**Open question: is the open model's `V` monotone in the number of closed hours as a theorem, or only typically?**
+In the two-hour instance the limits lowered for the wind evening exclude nothing the north midday needs, so the FTR model with the switch open has `V = 0`.
+In the four-hour instance the limits lowered for the two closed hours exclude the injections of the gas evening (1.3), the north midday (21.5) and the south midday (9.7), so it has `E[V] = 8.1`.
+The FTR model with the switch closed equals B2 in both instances, since its only `V` is the north midday's 16.9.
+**Open question: is the open FTR model's `V` monotone in the number of closed hours as a theorem, or only typically?**
 
 ## 5. Fenced limits make exposure controllable; the budget buys back only exposure-bounded `V`
 
@@ -150,29 +162,54 @@ One active set covered the whole grid, and the north midday's `V` fit `16.9 · y
 |---|---|---|---|---|---|---|---|---|---|
 | V, north midday | 0 | 1.8 | 5.6 | 9.3 | 12.0 | 14.0 | 15.6 | 16.5 | 16.9 |
 
-The curve only rises here because the open model has no exposure-bounded `V` in this instance.
+The curve only rises here because in this instance the FTR model with the switch open has `V = 0`, so nothing falls as `y_H` grows.
 
-## 7. A susceptance strictly between open and closed can have lower `E[V]` than either state
+## 7. A switch susceptance strictly between open and closed can give the FTR model lower `E[V]` than either state
 
-The closed model's `V` is topology-bounded and rises with `y_H` along the curve of finding 6.
-The open model's `V` is exposure-bounded and falls with `y_H`.
-It falls because at `y_H = 0` the FTR network carries more along the closed hours' directions than the closed DAM does, so several limits must drop below rating; a small `y_H` already couples H1 and H2, which removes most of that excess, so fewer limits drop.
-When both are positive, the sum can have its minimum in between.
-In the two-hour instance the open model's `V` is zero, nothing falls, and the curve is monotone.
-In the four-hour instance both are positive.
-Fenced, `τ = 0`, `U = 0` at every point; MILP at a 0.5% gap, so each `E[V]` carries about ±0.6, and two grid points timed out:
+S3 varies one thing: the susceptance `y_H` of the switch **in the FTR model**, from 0 (open) to ∞ (closed), and designs `b` at each value.
+The hours and their DAMs do not change.
+
+First, the FTR model with every limit at its rating and the switch unlimited, before any design.
+Four-hour instance:
+
+| y_H | 0 (open) | 0.1 | 0.2 | 0.5 | 1 | 2 | 5 | 20 | ∞ (closed) |
+|---|---|---|---|---|---|---|---|---|---|
+| U, wind evening (closed) | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 | 0 |
+| U, gas evening (closed) | 6.9 | 6.9 | 6.9 | 6.9 | 6.9 | 6.9 | 6.9 | 6.9 | 0 |
+| U, north midday (open) | 0 | 10.2 | 19.6 | 45.5 | 85.4 | 205 | 567 | 2370 | ∞ |
+| U, south midday (open) | 0 | 24.4 | 48.7 | 122 | 244 | 487 | 1218 | 4871 | ∞ |
+| V, north midday (open) | 0 | 2.8 | 4.8 | 8.4 | 11.2 | 13.5 | 15.3 | 16.5 | 16.9 |
+| V, every other hour | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Three things to read off.
+The north midday's `V` row is the topology-bounded `V`: it is the only one, and it rises with `y_H` along the curve of finding 6.
+The closed hours' `U` is the same 22.4 and 6.9 at every finite `y_H`: an unlimited switch lets the FTR model reproduce every open-network flow pattern, so coupling H1 and H2 weakly or strongly changes nothing along a direction that prices them equally.
+The open hours' `U` grows without bound: this is finding 1 with a finite switch.
+
+Now the design.
+At `y_H = 0` the switch has no row, so the only way to remove the closed hours' `U` of 22.4 and 6.9 is to lower line limits, and the lowered limits exclude the midday injections.
+At any `y_H > 0` the switch has a row, and the design caps the switch flow instead: a one-way cap of 6.3 at `y_H = 0.1`, rising to 31.7 at `∞`.
+The cap removes the closed hours' `U` and the open hours' `U` at once, and leaves the line limits near their ratings, so the midday injections stay feasible.
+So the exposure-bounded `V` is 7.9 at `y_H = 0` (all of the 8.1) and at most the MIP tolerance at every `y_H > 0`.
+The topology-bounded `V` is 0 at `y_H = 0` and rises to 16.9.
+The sum is smallest where the topology-bounded part is still small and the switch cap is already available: a small positive `y_H`.
+
+Designed, fenced, `τ = 0`, `U = 0` at every point; MILP at a 0.5% gap, so each `E[V]` carries about ±0.6, and two grid points timed out:
 
 | y_H | 0 (open) | 0.1 | 0.2 | 0.35 | 0.5 | 0.75 | 2 | 5 | 20 | ∞ (closed) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | E[V] | 8.1 | **1.2** | 1.7 | 2.2 | 2.5 | 2.9 | 3.6 | 3.9 | 4.7 | 4.7 (4.2 exact) |
-| V, north midday (topology-bounded) | 21.5 | 3.3 | 5.6 | 7.8 | 9.3 | 10.9 | 14.0 | 15.6 | 16.5 | 16.9 |
-| V, gas evening (exposure-bounded) | 1.3 | 1.5 | 1.2 | 1.0 | 0.8 | 0.7 | 0.3 | 0.1 | ~0 | ~0 |
-| V, south midday (exposure-bounded) | 9.7 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| V, north midday | 21.5 | 3.3 | 5.6 | 7.8 | 9.3 | 10.9 | 14.0 | 15.6 | 16.5 | 16.9 |
+| V, gas evening | 1.3 | 1.5 | 1.2 | 1.0 | 0.8 | 0.7 | 0.3 | 0.1 | ~0 | ~0 |
+| V, south midday | 9.7 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| switch cap | none | 6.3 | 10.5 | 14.7 | 17.5 | 20.6 | 26.4 | 29.3 | 31.0 | 31.7 |
 
-The minimum is near `y_H ≈ 0.1`, below `y_th`, at about a quarter of the better state.
-The north midday row equals finding 6's table at every `y_H`, so topology-bounded `V` is a property of that hour alone and adds across hours.
-At `y_H = 0` the design holds NH at 58.5 to keep `U = 0` in the closed hours; at `y_H = 0.1` it holds NH at 73.7, and the south midday's injection is feasible again.
-The relaxed susceptance is a second lever, the strength of the loop coupling, which the two states fix at their extremes.
+The north midday's 21.5 at `y_H = 0` is exposure-bounded (its topology-bounded value there is 0); its 3.3 at `y_H = 0.1` is topology-bounded plus tolerance (2.8 at ratings).
+That is the jump between the first two columns: a different cause, not a discontinuity of one curve.
+None of the curves is linear.
+Each is a ratio of two affine functions of `y_H` per active set (finding 6).
+The relaxed susceptance matters because it gives the switch a row and so a cap.
+The memo's point that switch limits belong in the design is what the interior optimum is made of.
 
 ---
 
@@ -181,5 +218,5 @@ The relaxed susceptance is a second lever, the strength of the loop coupling, wh
 - **Fairness.** Per-constraint and per-block shares of `V` at a design (existing `constraint_table` / `block_table`); max or CVaR across hours. At a vertex direction many rows bind, so this is also where dual multiplicity meets the design.
 - **Facet directions with a budget.** With every facet normal realized and `τ > 0`, the budget buys "which facets of the other state to violate": a frontier that is purely exposure-bounded, the complement of 5b.
 - **Vertex directions.** Dominance along exposing directions does not force containment, so S1 and S3 have room above B2 there. The MILP will be large (80 hours × 16–30 vertices); use the memo's iteration heuristic.
-- **Other hour mixes.** Does the S3 optimum move; is the open model's `V` monotone in the number of closed hours (finding 4's open question). Fix the two timed-out grid points.
+- **Other hour mixes.** Does the S3 optimum move; is the `V` of the FTR model with the switch open monotone in the number of closed hours (finding 4's open question). Fix the two timed-out grid points.
 - Line-outage hours. SD as a third binder in the north midday. Asymmetric line limits (memo's `(b⁺, b⁻)`). Settlement-point weights.
