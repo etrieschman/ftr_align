@@ -11,14 +11,17 @@ chosen lines bind in each. Each hour's direction `v_t` is the sum of its
 binding rows, so it is constant on every bus that hour's DAM sees.
 `U_t = h_FTR − h_∩`, `V_t = h_DAM − h_∩`, equal weights.
 
-**The ladder** (rungs of FTR-model design, each scored by `E[U]`, `E[V]`):
-B1 one physical state, every limit derated by `α`. B2 the stacked rows of
-every hour's physical state ("model every planned outage"). S1 limits `b`
-designed at a fixed switch state, choosing the dual vertex of `Λ(v_t)` per
-hour (enumeration, or a MILP with one binary per vertex). S2 S1 at every switch
-state, best kept. S3 the switch given a continuous susceptance `y_H`, S1 at
-each. S4 every susceptance free (not reached). From finding 5 on, designed
-limits are fenced at the physical ratings.
+**The ladder.** Rungs of FTR-model design, each scored by `E[U]`, `E[V]` over
+the hours. From finding 5 on, designed limits are fenced at the physical ratings.
+
+| rung | FTR model `Q(y, b)` | what is chosen |
+|---|---|---|
+| B1 | one physical switch state, every line limit `× α` | `α` |
+| B2 | rows of every hour's physical state, stacked ("model every planned outage") | nothing |
+| S1 | one physical switch state, limits `b` designed | `b`, via the dual vertex of `Λ(v_t)` per hour (enumeration, or MILP with one binary per vertex) |
+| S2 | S1 at every switch state, best kept | state and `b` |
+| S3 | switch given a continuous susceptance `y_H`, S1 at each grid point | `y_H` and `b` |
+| S4 | every element's susceptance free | `y` and `b` (not reached) |
 
 ---
 
