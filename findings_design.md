@@ -1,6 +1,6 @@
 # Findings: ex-ante FTR design with a station switch (texas5)
 
-**Question.** How much does each design lever buy: the limits `b`, the switch state `s`, a relaxed switch susceptance `y_H`?
+**Question.** How much does each design choice buy: the limits `b`, the switch state `s`, a relaxed switch susceptance `y_H`?
 Code: `notebooks/explore_texas5switch.py`, `ftr_align/cases/texas5switch.py`.
 Queue at the bottom.
 
@@ -50,13 +50,14 @@ An hour with one binding line almost never produces `V`: its optimal injections 
 On this network B2 has `V = 0` along all 32 facet normals of both DAM polytopes.
 `V > 0` needed two binding lines and a lopsided H1/H2 split.
 
-## 3. Against every direction, B2 is the best FTR model
+## 3. If every facet normal is a realized direction, no FTR model has lower `V` than B2
 
-If the realized directions include every facet normal of every hour's DAM polytope, `U = 0` forces the FTR model inside every DAM polytope, hence inside B2.
-A smaller set inside the same DAM has larger `V`.
-So at `τ = 0` nothing beats B2.
-Today's practice is the design that refuses exposure in every direction.
-Design can gain only because realized directions are few.
+Suppose the realized directions include every facet normal of every hour's DAM polytope.
+`U = 0` along a facet normal keeps the FTR model inside that facet's halfspace, so `U = 0` along all of them keeps it inside every DAM polytope, hence inside B2.
+A smaller set inside the same DAM has `V` at least as large.
+So at `τ = 0` no FTR model has lower `V` than B2.
+The argument uses only polytope facts, so it holds for any network and any hours, but only under its premise: every facet normal realized.
+Realized directions are few, which is the room design has.
 
 ## 4. Each FTR switch state has a `V` the other does not, and `b` removes neither
 
@@ -81,13 +82,14 @@ Each closed-switch hour can add `V` only to the open FTR model. Each open-switch
 
 **Open question: is the open FTR model's `V` monotone in the number of closed-switch hours?**
 
-## 5. A two-sided cap on the closed switch equals B2
+## 5. On this instance, a two-sided limit on the closed switch reproduced B2
 
-FTR switch closed, every line at rating, switch capped at 31.7 (H2→H1) and 0 (H1→H2): `U` and `V` equal B2's in every hour.
-The memo's dual explains it: for a closed switch, the whole value of moving injection across it lands on the switch's own limit price, so the cap is the exact lever for exposure.
-Each direction needs its own cap because the two open-switch hours price H1 against H2 with opposite signs.
-A tighter cap raises `V` without changing `U` (cap 20: `V = 22.4`).
-A zero cap is not the open switch (`V = 31.7` against 0).
+FTR switch closed, every line at rating, switch flow limited to 31.7 (H2→H1) and 0 (H1→H2): `U` and `V` equal B2's in every hour.
+The memo's dual suggests why: for a closed switch, the value of moving injection across it lands on the switch's own limit price, so the switch limit is where exposure in open-switch hours is controlled.
+Each direction needed its own limit because the two open-switch hours price H1 against H2 with opposite signs.
+A tighter limit raised `V` without changing `U` (limit 20: `V = 22.4`).
+A zero limit is not the open switch (`V = 31.7` against 0).
+This is one switch and four hours; whether a switch limit always reproduces B2 is untested.
 
 ## 6. Fenced, exposure is controllable, and a budget buys back only exposure-bounded `V`
 
@@ -108,21 +110,29 @@ Two-hour case: one active set over the whole grid, `V = 16.9 · y_H / (y_H + 0.4
 |---|---|---|---|---|---|---|---|---|---|
 | V, north midday | 0 | 1.8 | 5.6 | 9.3 | 12.0 | 14.0 | 15.6 | 16.5 | 16.9 |
 
-## 8. A switch susceptance between open and closed can beat both states
+## 8. On the four-hour case, the FTR model with lowest `E[V]` had the switch at an intermediate susceptance
 
-Four-hour case.
-With every limit at rating and the switch uncapped, the closed-switch hours' `U` is 22.4 and 6.9 at every finite `y_H`, because an unlimited switch reproduces every open-network flow pattern.
-At `y_H = 0` the switch has no row, so only lowered line limits can remove that `U`, and they exclude the midday injections (exposure-bounded `V = 7.9`).
-At any `y_H > 0` the switch has a row, the design caps it instead (6.3 at `y_H = 0.1`, 31.7 at ∞), the line limits stay near rating, and the exposure-bounded `V` vanishes.
-The topology-bounded `V` is the north midday's, 0 at `y_H = 0` and rising to 16.9.
-The sum is smallest at a small positive `y_H`.
+S3 varies `y_H`, the susceptance of the switch in the FTR model, from 0 (open) to ∞ (closed), and designs the limits at each value.
+The hours do not change.
+
+Before design, with every limit at its rating and no limit on the switch:
+in the two closed-switch hours `U` is 22.4 and 6.9 at every finite `y_H` and 0 at `y_H = ∞`; in the two open-switch hours `U` is positive at every `y_H > 0` and infinite at `y_H = ∞` (finding 1).
+The design must bring all of this `U` to zero.
+
+At `y_H = 0` the switch is not an element of the FTR model, so the design can only lower line limits.
+The lowered limits exclude the two midday injections, and `E[V] = 8.1`, all of it exposure-bounded.
+
+At every `y_H > 0` the switch is an element with a flow limit, and the design brings `U` to zero mainly by limiting the switch flow (6.3 at `y_H = 0.1`, 31.7 at `y_H = ∞`).
+The line limits stay near their ratings and the midday injections remain feasible.
+What remains is the north midday's topology-bounded `V`: 2.8 at `y_H = 0.1`, 16.9 at `y_H = ∞`.
 
 | y_H | 0 | 0.1 | 0.2 | 0.5 | 2 | 5 | ∞ |
 |---|---|---|---|---|---|---|---|
 | E[V], designed, fenced, τ = 0 | 8.1 | 1.2 | 1.7 | 2.5 | 3.6 | 3.9 | 4.2 |
 
 MILP at a 0.5% gap, so each value carries about ±0.6.
-The north midday's 21.5 at `y_H = 0` is exposure-bounded; its 3.3 at `y_H = 0.1` is topology-bounded. That is the jump.
+The lowest `E[V]` is at `y_H = 0.1`, below both switch states.
+Where the lowest value sits depends on the instance; here it was the smallest grid point above zero because the topology-bounded `V` starts at zero and the switch limit was available at any `y_H > 0`.
 
 ---
 
