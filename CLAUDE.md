@@ -260,13 +260,14 @@ ftr_align/
                 Also `dam_faces` / `scenario` (corner directions via faces in bus
                 space, lifted) and `design_scenarios` (solve_limit_design on the
                 stacked states) -- superseded by injections, kept.
-  cases/rts_gmlc.py  73-bus loader: SHA-pinned fetch (RTS_GMLC_REF + MANIFEST
-                checksums) of bus/branch/gen CSVs + day-ahead load/renewable
-                timeseries -> load_network (DC PTDF w/ magnitude taps),
-                n1_contingencies (Cont base, LTE post-contingency, bridges
-                skipped), dam_instance(interval) (PWL step bids from heat-rate
-                segments, interval-synced renewable caps, regional load split to
-                buses). Cache gitignored.
+  cases/rts_gmlc.py  73-bus case on the `rts_gmlc` data package (../rts-gmlc:
+                pinned commit, SHA256 manifest, snake_cased polars tables, offer
+                blocks; its cache lives in ~/.cache/rts_gmlc). This module holds
+                only the modeling: load_network (DC PTDF w/ magnitude taps),
+                n1_contingencies (cont_rating base, lte_rating post-contingency,
+                bridges skipped), dam_instance(interval) (package offer blocks
+                for thermal units, interval-synced renewable caps, regional load
+                split to buses).
 notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
                 explore_texas5switch (the design ladder B1/B2/S1/S2/S3 on two-
                 and four-hour instances; results in findings_design.md),

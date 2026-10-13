@@ -41,7 +41,8 @@ ftr_align/
   polytope.py     vertices / normal-fan regimes of Q
   metrics.py      gap_summary, summary, block_table, constraint_table
   viz.py          3-node figures
-  cases/          toy (3-node oracle), texas5 (5-node), rts_gmlc (73-bus loader)
+  cases/          toy (3-node oracle), texas5 (5-node), rts_gmlc (73-bus case on the
+                rts_gmlc data package, ../rts-gmlc)
 notebooks/        run scripts (jupytext `# %%`)
 tests/            oracle and invariant tests
 ```

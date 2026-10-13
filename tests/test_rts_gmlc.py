@@ -1,5 +1,6 @@
-"""RTS-GMLC loader tests.  These need the pinned CSVs; if the cache is empty and
-the machine is offline the suite skips, keeping the toy oracle tests hermetic."""
+"""RTS-GMLC case tests.  These need the pinned CSVs served by the ``rts_gmlc``
+package; if its cache is empty and the machine is offline the suite skips,
+keeping the toy oracle tests hermetic."""
 
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ def test_network_invariants(net):
 
 def test_single_ref_bus(net):
     bus, _, _ = rts.bus_table()
-    assert (bus["Bus Type"].to_numpy() == "Ref").sum() == 1
-    assert bus["Bus Type"].to_numpy()[net.slack_idx] == "Ref"
+    assert (bus["bus_type"].to_numpy() == "Ref").sum() == 1
+    assert bus["bus_type"].to_numpy()[net.slack_idx] == "Ref"
 
 
 def test_bus_index_roundtrip(net):
@@ -48,8 +49,9 @@ def test_bus_index_roundtrip(net):
 
 
 def test_taps_default_off_transformers(net):
-    branch = rts._read_csv(rts._BRANCH)
-    tr = branch["Tr Ratio"].to_numpy().astype(float)
+    import rts_gmlc
+
+    tr = rts_gmlc.branch()["tr_ratio"].to_numpy().astype(float)
     assert np.allclose(net.tap[tr == 0.0], 1.0)  # non-transformers -> ratio 1
     assert np.all(net.tap[tr > 0.0] == tr[tr > 0.0])
     assert (net.tap != 1.0).any()  # RTS does have transformers
