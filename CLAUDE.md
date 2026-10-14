@@ -235,31 +235,49 @@ ftr_align/
                 clearing, which the 3-node oracle already anchors.
   cases/texas5switch.py  texas5 with station H split (H1/H2) and a switch: the
                 EX-ANTE DESIGN case (memo "Ex ante setup ... switches").  One
-                `switch_ptdf(y_switch)` covers open (y=0, column dropped),
-                relaxed (finite y, an ordinary line) and closed (y=inf, exact
-                saddle solve: node angles + a free switch flow) on a FIXED node
-                set, so NetworkModel / intersection / gap_summary / faces work
-                unchanged.  `model(y_switch, b_line, b_switch)`, `dam_model(state)`
-                (closed switch unlimited -> unbounded in node space; prices lift
-                by M^T so v is bus-constant), `bus_network` / `bus_collector` (M).
-                Scenarios: `Scenario(label, state, dam, direction, weight)`;
-                `scenarios_from_injections({label: (state, q, [binding lines])},
+                switch.  A switch state IS its susceptance (`CLOSED = inf`,
+                `OPEN = 0`); `switch_ptdf(y_switch)` is three plain cases on
+                `compute_ptdf`: open = the lines alone, relaxed = the switch as
+                a line of reactance 1/y, closed = H1 and H2 merged into one bus
+                (`M_CLOSED`) with the switch row read off the balance at H1.
+                Node and line index constants (`W`..`H2`, `WN`..`DH`) are
+                exported.  Fixed node set, so NetworkModel / intersection /
+                gap_summary work unchanged.
+                `model(y_switch, b_line, b_switch)` is both the FTR model and, with
+                the switch unlimited, the hour's DAM (closed + unlimited is
+                unbounded in node space; prices are bus-constant).
+                Hours: `Scenario(label, y_switch, q, binding, dam, direction, weight)`;
+                `scenarios_from_injections({label: (y_switch, q, [binding lines])},
                 margin)` -> one rating vector for all hours (a binding line's
                 rating is its flow in its hour; others get max flow + margin) and
-                directions v_t = sum of binding rows; `match_flows` adjusts an
-                injection so chosen lines carry given flows (shared patterns
-                across hours); `flows_table`.  Evaluation: `support` (inf when
-                unbounded), `evaluate(ftr, scenarios)` -> per-hour U, V,
-                `expected`.  Design: `dual_vertices(model, v)` (vertices of
-                Lambda(v) by (n-1)-subset enumeration), `design_limits` (memo eq.
-                design-b-vertex; one compiled Parameter LP per vertex tuple,
-                enumerated), `design_limits_milp` (same, binaries + big-M per
-                vertex, HiGHS; pass `time_limit=`, `mip_rel_gap=`; a loose
-                switch cap inflates big-M and makes it crawl), `rating_fence`
-                (b_max per row = physical rating), `with_designed_limits`.
-                Also `dam_faces` / `scenario` (corner directions via faces in bus
-                space, lifted) and `design_scenarios` (solve_limit_design on the
-                stacked states) -- superseded by injections, kept.
+                directions v_t = signed sum of the binding rows; `flows_table(scenarios)`
+                (each injection under every state: the cross-feasibility that
+                decides V); `match_flows` adjusts an injection so chosen lines
+                carry given flows (shared patterns across hours).  Evaluation:
+                `support` (inf when unbounded), `evaluate(ftr, scenarios)` -> per-
+                hour h, U, V.  Design: `dual_vertices(model, v)` (vertices of
+                Lambda(v) by (n-1)-subset enumeration), `rating_fence` (b_max per
+                row = rating), `design_limits` (memo eq. design-b-vertex; one
+                compiled Parameter LP per vertex tuple, enumerated) and
+                `design_limits_milp` (same, binaries + big-M per vertex; Gurobi
+                when installed else HiGHS, `solver=` overrides; `time_limit=` in
+                seconds for either; returns the incumbent with
+                `status="user_limit"` and `gap` at the time limit; Gurobi solves
+                S1 in under a second where HiGHS hit 60 s).  Both share
+                `_design_lp`, whose `switch=` toggle says what the design may
+                do with the switch's limit: "fixed" (default: leave it where the
+                template put it, design line limits only), "symmetric" (one
+                number both ways), "per_direction".  The hours live here too:
+                `Q` is the injection table (hour -> q, chosen by hand);
+                `four_hours(margin)` (hour 4 matched to hour 1's DH/WD flows,
+                binding lines spelled in the call) -> `(b_line, scenarios,
+                cross)` with labels "1".."4".  The two-hour instance lives only
+                in the test file.
+                Dropped 2026-10-14: `dam_model`, `with_designed_limits` (use
+                `with_limits`), `expected`, and the corner-direction route
+                (`bus_network`, `lift`, `dam_faces`, `scenario`, `design_scenarios`).
+                `tests/test_texas5switch.py` pins the PTDF against the bus-branch
+                network at both states.
   cases/rts_gmlc.py  73-bus case on the `rts_gmlc` data package (../rts-gmlc:
                 pinned commit, SHA256 manifest, snake_cased polars tables, offer
                 blocks; its cache lives in ~/.cache/rts_gmlc). This module holds
@@ -269,8 +287,9 @@ ftr_align/
                 for thermal units, interval-synced renewable caps, regional load
                 split to buses).
 notebooks/      run scripts (jupytext `# %%`): explore_toy, explore_texas5,
-                explore_texas5switch (the design ladder B1/B2/S1/S2/S3 on two-
-                and four-hour instances; results in findings_design.md),
+                explore_texas5switch (the four-hour instance; the ladder
+                B1/B2/S1 with the switch-limit toggle, the tau frontier at both
+                states, S3; the no-design table at every y_H),
                 explore_rts_gmlc, figures_toy (writes to notebooks/figures/,
                 gitignored), and reproduce_conference -- the PowerUp paper's
                 fixed target: net_dual + dual_summary, Table II
@@ -702,4 +721,9 @@ hyperplane are affected — pure region/containment plots are affine and fine.
 
 `.venv` from **public PyPI** — the machine's default pip index is a private
 Buildkite registry, so always install with `--index-url https://pypi.org/simple`.
-Solvers: HiGHS + CLARABEL. Run tests: `.venv/bin/python -m pytest -q`.
+Solvers: HiGHS + CLARABEL, plus Gurobi (`gurobipy` from PyPI) for the design
+MILP in `cases/texas5switch.py`: `design_limits_milp` picks Gurobi when it is
+installed and HiGHS otherwise, so nothing requires it. The Gurobi license is
+Erich's own, at `~/gurobi.lic` (Gurobi's default location); never copy it, point
+to it, or set `GRB_*` variables anywhere in the repo. Run tests:
+`.venv/bin/python -m pytest -q`.
