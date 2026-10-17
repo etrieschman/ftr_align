@@ -23,10 +23,11 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-rts-gmlc = { path = "../rts-gmlc", editable = true }
+rts-gmlc = { git = "https://github.com/etrieschman/rts-gmlc.git" }
 
 [project.optional-dependencies]
 dev = ["pytest"]
+gurobi = ["gurobipy"]
 
 [tool.setuptools.packages.find]
 include = ["ftr_align*"]

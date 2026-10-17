@@ -2,7 +2,7 @@
 :class:`PhysicalNetwork`, a :class:`Contingency` list, and a :class:`DamInstance`
 -- so the core (``build`` -> ``clear_dam`` / ``SupportProblem``) runs unchanged.
 
-The data comes from the ``rts_gmlc`` package (``~/dev/rts-gmlc``), which pins the
+The data comes from the ``rts_gmlc`` package (``github.com/etrieschman/rts-gmlc``), which pins the
 upstream commit, verifies every file against a SHA256 manifest, and serves the
 CSVs as polars tables with snake_cased columns. This module makes the modeling
 choices on top of that data:

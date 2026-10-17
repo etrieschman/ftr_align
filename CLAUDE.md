@@ -278,7 +278,7 @@ ftr_align/
                 (`bus_network`, `lift`, `dam_faces`, `scenario`, `design_scenarios`).
                 `tests/test_texas5switch.py` pins the PTDF against the bus-branch
                 network at both states.
-  cases/rts_gmlc.py  73-bus case on the `rts_gmlc` data package (../rts-gmlc:
+  cases/rts_gmlc.py  73-bus case on the `rts_gmlc` data package (github.com/etrieschman/rts-gmlc, installed from git:
                 pinned commit, SHA256 manifest, snake_cased polars tables, offer
                 blocks; its cache lives in ~/.cache/rts_gmlc). This module holds
                 only the modeling: load_network (DC PTDF w/ magnitude taps),

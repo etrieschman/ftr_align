@@ -42,7 +42,7 @@ ftr_align/
   metrics.py      gap_summary, summary, block_table, constraint_table
   viz.py          3-node figures
   cases/          toy (3-node oracle), texas5 (5-node), rts_gmlc (73-bus case on the
-                rts_gmlc data package, ../rts-gmlc)
+                rts_gmlc data package, github.com/etrieschman/rts-gmlc)
 notebooks/        run scripts (jupytext `# %%`)
 tests/            oracle and invariant tests
 ```
